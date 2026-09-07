@@ -1,8 +1,51 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, Pencil, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, GripVertical, Pencil, Trash2, X } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { TaskInput } from "@/components/TaskInput";
 import { loadTasks, newId, saveTasks, type Task } from "@/lib/tasks";
+
+function SortableTask({ id, children }: { id: string; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <section
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`relative overflow-hidden rounded-2xl bg-card shadow-[var(--shadow-soft)] ${
+        isDragging ? "z-10 opacity-80 ring-2 ring-ring" : ""
+      }`}
+    >
+      <button
+        type="button"
+        aria-label="גרירה לשינוי סדר"
+        className="absolute start-2 top-3 cursor-grab touch-none rounded-lg p-2 text-muted-foreground transition hover:bg-secondary active:cursor-grabbing"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+      {children}
+    </section>
+  );
+}
+
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -104,6 +147,13 @@ function Index() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+
 
   useEffect(() => {
     setTasks(loadTasks());
@@ -140,15 +190,25 @@ function Index() {
             </p>
           )}
 
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={({ active, over }: DragEndEvent) => {
+              if (!over || active.id === over.id) return;
+              setTasks((prev) => {
+                const from = prev.findIndex((t) => t.id === active.id);
+                const to = prev.findIndex((t) => t.id === over.id);
+                return from < 0 || to < 0 ? prev : arrayMove(prev, from, to);
+              });
+            }}
+          >
+          <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
           {tasks.map((task) => {
             const open = openId === task.id;
             const doneCount = task.subtasks.filter((s) => s.done).length;
             return (
-              <section
-                key={task.id}
-                className="overflow-hidden rounded-2xl bg-card shadow-[var(--shadow-soft)]"
-              >
-                <div className="flex items-center gap-2 px-4 py-3">
+              <SortableTask key={task.id} id={task.id}>
+                <div className="flex items-center gap-2 py-3 pe-4 ps-12">
                   <button
                     type="button"
                     aria-label="פתיחה"
@@ -158,6 +218,7 @@ function Index() {
                     <ChevronDown className={`h-5 w-5 transition-transform ${open ? "rotate-180" : ""}`} />
                   </button>
                   <div className="flex-1" onClick={() => setOpenId(open ? null : task.id)}>
+
                     <EditableRow
                       strong
                       title={task.title}
@@ -212,10 +273,13 @@ function Index() {
                     />
                   </div>
                 )}
-              </section>
+              </SortableTask>
             );
           })}
+          </SortableContext>
+          </DndContext>
         </div>
+
       </main>
     </div>
   );
