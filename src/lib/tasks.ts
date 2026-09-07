@@ -1,7 +1,9 @@
 export type SubTask = { id: string; title: string; done: boolean };
-export type Task = { id: string; title: string; subtasks: SubTask[] };
+export type Task = { id: string; title: string; subtasks: SubTask[]; groupId?: string | null };
+export type Group = { id: string; title: string };
 
 const KEY = "todo-lists-v1";
+const GROUPS_KEY = "todo-groups-v1";
 
 export const newId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -22,6 +24,25 @@ export function saveTasks(tasks: Task[]) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(KEY, JSON.stringify(tasks));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadGroups(): Group[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(GROUPS_KEY);
+    return raw ? (JSON.parse(raw) as Group[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveGroups(groups: Group[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(GROUPS_KEY, JSON.stringify(groups));
   } catch {
     /* ignore */
   }
