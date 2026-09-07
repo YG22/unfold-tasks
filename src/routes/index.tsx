@@ -147,6 +147,13 @@ function Index() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+
 
   useEffect(() => {
     setTasks(loadTasks());
