@@ -208,7 +208,7 @@ function Index() {
             const doneCount = task.subtasks.filter((s) => s.done).length;
             return (
               <SortableTask key={task.id} id={task.id}>
-                <div className="flex items-center gap-2 px-4 py-3">
+                <div className="flex items-center gap-2 py-3 pe-4 ps-12">
                   <button
                     type="button"
                     aria-label="פתיחה"
