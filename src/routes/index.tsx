@@ -140,14 +140,24 @@ function Index() {
             </p>
           )}
 
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={({ active, over }) => {
+              if (!over || active.id === over.id) return;
+              setTasks((prev) => {
+                const from = prev.findIndex((t) => t.id === active.id);
+                const to = prev.findIndex((t) => t.id === over.id);
+                return from < 0 || to < 0 ? prev : arrayMove(prev, from, to);
+              });
+            }}
+          >
+          <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
           {tasks.map((task) => {
             const open = openId === task.id;
             const doneCount = task.subtasks.filter((s) => s.done).length;
             return (
-              <section
-                key={task.id}
-                className="overflow-hidden rounded-2xl bg-card shadow-[var(--shadow-soft)]"
-              >
+              <SortableTask key={task.id} id={task.id}>
                 <div className="flex items-center gap-2 px-4 py-3">
                   <button
                     type="button"
@@ -158,6 +168,7 @@ function Index() {
                     <ChevronDown className={`h-5 w-5 transition-transform ${open ? "rotate-180" : ""}`} />
                   </button>
                   <div className="flex-1" onClick={() => setOpenId(open ? null : task.id)}>
+
                     <EditableRow
                       strong
                       title={task.title}
