@@ -198,7 +198,10 @@ function Index() {
       if (from < 0 || to < 0) return prev;
       const moved = arrayMove(subset, from, to);
       const next = [...prev];
-      idx.forEach(({ i }, k) => (next[i] = moved[k]));
+      idx.forEach(({ i }, k) => {
+        const m = moved[k];
+        if (m) next[i] = m;
+      });
       return next;
     });
 
