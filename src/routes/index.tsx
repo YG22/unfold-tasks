@@ -1,8 +1,51 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, Pencil, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, GripVertical, Pencil, Trash2, X } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { TaskInput } from "@/components/TaskInput";
 import { loadTasks, newId, saveTasks, type Task } from "@/lib/tasks";
+
+function SortableTask({ id, children }: { id: string; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <section
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`relative overflow-hidden rounded-2xl bg-card shadow-[var(--shadow-soft)] ${
+        isDragging ? "z-10 opacity-80 ring-2 ring-ring" : ""
+      }`}
+    >
+      <button
+        type="button"
+        aria-label="גרירה לשינוי סדר"
+        className="absolute left-2 top-3 cursor-grab touch-none rounded-lg p-2 text-muted-foreground transition hover:bg-secondary active:cursor-grabbing"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+      {children}
+    </section>
+  );
+}
+
 
 export const Route = createFileRoute("/")({
   head: () => ({
