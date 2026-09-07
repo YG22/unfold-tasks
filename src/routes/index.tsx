@@ -35,7 +35,7 @@ function SortableTask({ id, children }: { id: string; children: React.ReactNode 
       <button
         type="button"
         aria-label="גרירה לשינוי סדר"
-        className="absolute left-2 top-3 cursor-grab touch-none rounded-lg p-2 text-muted-foreground transition hover:bg-secondary active:cursor-grabbing"
+        className="absolute start-2 top-3 cursor-grab touch-none rounded-lg p-2 text-muted-foreground transition hover:bg-secondary active:cursor-grabbing"
         {...attributes}
         {...listeners}
       >
