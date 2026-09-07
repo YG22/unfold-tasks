@@ -212,10 +212,13 @@ function Index() {
                     />
                   </div>
                 )}
-              </section>
+              </SortableTask>
             );
           })}
+          </SortableContext>
+          </DndContext>
         </div>
+
       </main>
     </div>
   );
