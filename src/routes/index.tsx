@@ -193,7 +193,7 @@ function Index() {
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
-            onDragEnd={({ active, over }) => {
+            onDragEnd={({ active, over }: DragEndEvent) => {
               if (!over || active.id === over.id) return;
               setTasks((prev) => {
                 const from = prev.findIndex((t) => t.id === active.id);
