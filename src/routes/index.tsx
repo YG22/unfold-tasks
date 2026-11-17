@@ -4,9 +4,12 @@ import {
   CalendarClock,
   Check,
   ChevronDown,
+  Clock,
   FolderPlus,
   GripVertical,
+  ListTodo,
   Pencil,
+  Sun,
   Trash2,
   X,
 } from "lucide-react";
@@ -60,6 +63,84 @@ function splitStart(v?: string | null): [string, string] {
   if (!v) return ["", ""];
   const [d, t] = v.split("T");
   return [d ?? "", t ?? ""];
+}
+
+// Today's date in the user's local timezone (not UTC).
+function localTodayStr() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
+
+type DayEntry = { task: Task; sub: SubTask };
+
+function MyDayView({
+  today,
+  overdue,
+  onToggle,
+}: {
+  today: DayEntry[];
+  overdue: DayEntry[];
+  onToggle: (taskId: string, subId: string) => void;
+}) {
+  const [showOverdue, setShowOverdue] = useState(true);
+  const todayStr = localTodayStr();
+  const row = ({ task, sub }: DayEntry) => {
+    const [d, t] = splitStart(sub.startAt);
+    return (
+      <div
+        key={sub.id}
+        className="flex items-center gap-3 rounded-2xl bg-card px-4 py-3 shadow-[var(--shadow-soft)]"
+      >
+        <button
+          type="button"
+          onClick={() => onToggle(task.id, sub.id)}
+          aria-label="סימון כבוצע"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-full border-2 border-border bg-card transition hover:border-primary"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-foreground">{sub.title}</p>
+          <p className="truncate text-xs text-muted-foreground">{task.title}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1 rounded-full bg-secondary px-2 py-1" dir="ltr">
+            <Clock className="h-3 w-3" />
+            {d !== todayStr ? `${fmtDate(d)} ` : ""}
+            {t}
+          </span>
+          {sub.durationMin ? (
+            <span className="rounded-full bg-secondary px-2 py-1">{sub.durationMin} דק׳</span>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div className="mt-6 space-y-3">
+      {today.length === 0 ? (
+        <p className="rounded-2xl bg-card px-5 py-8 text-center text-muted-foreground shadow-[var(--shadow-soft)]">
+          אין משימות מתוכננות להיום. יום פנוי! ☀️
+        </p>
+      ) : (
+        today.map(row)
+      )}
+      {overdue.length > 0 && (
+        <div className="rounded-2xl border border-border bg-card/60 p-3">
+          <button
+            type="button"
+            onClick={() => setShowOverdue((v) => !v)}
+            aria-expanded={showOverdue}
+            className="flex w-full items-center gap-2 px-1 py-1 text-sm text-muted-foreground transition hover:text-foreground"
+          >
+            <ChevronDown
+              className={`h-4 w-4 transition-transform ${showOverdue ? "" : "-rotate-90"}`}
+            />
+            משימות שעבר מועדן ({overdue.length})
+          </button>
+          {showOverdue && <div className="mt-2 space-y-2">{overdue.map(row)}</div>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // HH:mm (24h) entry: accepts 930, 9:30, 0930 or 09:30; commits on blur.
@@ -320,6 +401,7 @@ function Index() {
   const [picked, setPicked] = useState<string[]>([]);
   const [groupError, setGroupError] = useState("");
   const [scheduleOpen, setScheduleOpen] = useState<string | null>(null);
+  const [view, setView] = useState<"day" | "lists">("day");
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -346,6 +428,17 @@ function Index() {
 
   const groupOf = (t: Task) => t.groupId ?? null;
   const tasksIn = (gid: string | null) => tasks.filter((t) => groupOf(t) === gid);
+
+  const todayStr = localTodayStr();
+  const scheduled: DayEntry[] = tasks.flatMap((task) =>
+    task.subtasks.filter((s) => !s.done && s.startAt).map((sub) => ({ task, sub })),
+  );
+  const dateOf = (e: DayEntry) => splitStart(e.sub.startAt)[0];
+  const timeOf = (e: DayEntry) => splitStart(e.sub.startAt)[1] || "99:99";
+  const todayEntries = scheduled
+    .filter((e) => dateOf(e) === todayStr)
+    .sort((a, b) => timeOf(a).localeCompare(timeOf(b)));
+  const overdueEntries = scheduled.filter((e) => dateOf(e) < todayStr);
 
   const reorderWithin = (gid: string | null, activeId: string, overId: string) =>
     setTasks((prev) => {
@@ -520,6 +613,45 @@ function Index() {
           </p>
         </header>
 
+        <div className="mb-6 grid grid-cols-2 gap-2 rounded-2xl bg-card p-1.5 shadow-[var(--shadow-soft)]">
+          {(
+            [
+              { id: "day", label: "היום שלי", icon: Sun },
+              { id: "lists", label: "כל הרשימות", icon: ListTodo },
+            ] as const
+          ).map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setView(id)}
+              aria-pressed={view === id}
+              className={`flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition ${
+                view === id
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-secondary"
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {view === "day" && (
+          <MyDayView
+            today={todayEntries}
+            overdue={overdueEntries}
+            onToggle={(taskId, subId) =>
+              update(taskId, (x) => ({
+                ...x,
+                subtasks: x.subtasks.map((y) => (y.id === subId ? { ...y, done: !y.done } : y)),
+              }))
+            }
+          />
+        )}
+
+        {view === "lists" && (
+        <>
         <TaskInput
           placeholder="שם משימה חדשה"
           onAdd={(title) => {
@@ -671,6 +803,8 @@ function Index() {
             </SortableContext>
           </DndContext>
         </div>
+        </>
+        )}
       </main>
     </div>
   );
