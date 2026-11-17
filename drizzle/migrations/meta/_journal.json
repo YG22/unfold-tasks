@@ -22,6 +22,20 @@
       "when": 1794938546027,
       "tag": "0002_push_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794944889486,
+      "tag": "0003_reminder_deliveries",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794944949428,
+      "tag": "0004_fix_claim_due_reminders",
+      "breakpoints": true
     }
   ]
 }

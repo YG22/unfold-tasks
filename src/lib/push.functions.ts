@@ -108,3 +108,18 @@ export const sendTestPushAll = createServerFn({ method: "POST" })
     const n = (x: string) => results.filter((r) => r === x).length;
     return { total: list.length, accepted: n("accepted"), failed: n("failed"), expired: n("expired") };
   });
+
+// Manual reminder test: creates a synthetic reminder (no real task touched) and runs it through
+// the same claim-uniqueness + delivery pipeline the scheduler uses.
+export const simulateReminder = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { deliver } = await import("@/lib/reminders.server");
+    const { data: row, error } = await supabaseAdmin.from("reminder_deliveries")
+      .insert({ user_id: context.userId, subtask_id: crypto.randomUUID(), kind: "test", fire_at: new Date().toISOString(), title: "משימת בדיקה (לא משימה אמיתית)", attempts: 1 })
+      .select("id,user_id,subtask_id,kind,fire_at,title,attempts").single();
+    if (error || !row) throw new Error("SIM_FAILED");
+    const [r] = await deliver([row]);
+    return r!;
+  });

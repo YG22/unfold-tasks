@@ -19,6 +19,7 @@ export type Database = {
           enabled: boolean
           remind_at_start: boolean
           remind_before: boolean
+          reminders_from: string
           timezone: string | null
           updated_at: string
           user_id: string
@@ -27,6 +28,7 @@ export type Database = {
           enabled?: boolean
           remind_at_start?: boolean
           remind_before?: boolean
+          reminders_from?: string
           timezone?: string | null
           updated_at?: string
           user_id?: string
@@ -35,6 +37,7 @@ export type Database = {
           enabled?: boolean
           remind_at_start?: boolean
           remind_before?: boolean
+          reminders_from?: string
           timezone?: string | null
           updated_at?: string
           user_id?: string
@@ -73,6 +76,54 @@ export type Database = {
           last_success_at?: string | null
           p256dh?: string
           user_agent?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      reminder_deliveries: {
+        Row: {
+          accepted_count: number
+          attempts: number
+          created_at: string
+          failed_count: number
+          fire_at: string
+          id: string
+          kind: string
+          next_attempt_at: string | null
+          status: string
+          subtask_id: string
+          title: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          accepted_count?: number
+          attempts?: number
+          created_at?: string
+          failed_count?: number
+          fire_at: string
+          id?: string
+          kind: string
+          next_attempt_at?: string | null
+          status?: string
+          subtask_id: string
+          title: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          accepted_count?: number
+          attempts?: number
+          created_at?: string
+          failed_count?: number
+          fire_at?: string
+          id?: string
+          kind?: string
+          next_attempt_at?: string | null
+          status?: string
+          subtask_id?: string
+          title?: string
+          updated_at?: string
           user_id?: string
         }
         Relationships: []
@@ -201,6 +252,18 @@ export type Database = {
     }
     Functions: {
       apply_task_changes: { Args: { p: Json }; Returns: undefined }
+      claim_due_reminders: {
+        Args: { p_grace?: string; p_now?: string }
+        Returns: {
+          attempts: number
+          fire_at: string
+          id: string
+          kind: string
+          subtask_id: string
+          title: string
+          user_id: string
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never

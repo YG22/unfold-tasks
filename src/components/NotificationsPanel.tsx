@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Bell, BellOff, Send, SendHorizontal } from "lucide-react";
 import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
-import { getVapidPublicKey, removeSubscription, saveSubscription, sendTestPush, sendTestPushAll } from "@/lib/push.functions";
+import { getVapidPublicKey, removeSubscription, saveSubscription, sendTestPush, sendTestPushAll, simulateReminder } from "@/lib/push.functions";
 import { unb64u } from "@/lib/webpush";
 
 const btn =
@@ -41,6 +41,7 @@ export function NotificationsPanel({ userId }: { userId: string }) {
   const remove = useServerFn(removeSubscription);
   const test = useServerFn(sendTestPush);
   const testAll = useServerFn(sendTestPushAll);
+  const sim = useServerFn(simulateReminder);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { setEnv("unsupported"); }
@@ -142,6 +143,17 @@ export function NotificationsPanel({ userId }: { userId: string }) {
     } finally { setBusy(false); }
   };
 
+  const simulate = async () => {
+    if (busy) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await sim();
+      setMsg(r.total === 0 ? { ok: false, text: "אין מכשירים רשומים להתראות בחשבון הזה." }
+        : { ok: r.accepted > 0, text: `תזכורת בדיקה (ללא שינוי במשימות): התקבלה בשירות ההתראות ל-${r.accepted} מתוך ${r.total} מכשירים. זה לא מאשר שהיא הוצגה — בדקו במכשיר.` });
+    } catch (e) { console.error(e); setMsg({ ok: false, text: "בדיקת התזכורת נכשלה. נסו שוב." }); }
+    finally { setBusy(false); }
+  };
+
   const on = s.enabled && !!sub && perm === "granted";
 
   return (
@@ -179,6 +191,9 @@ export function NotificationsPanel({ userId }: { userId: string }) {
       )}
       <button className={`${btn2} w-full sm:w-auto`} disabled={busy} onClick={sendAll} aria-busy={busy}>
         <SendHorizontal className="h-4 w-4" /> {busy ? "שולח…" : "שליחת התראה לכל המכשירים הרשומים"}
+      </button>
+      <button className={`${btn2} w-full sm:w-auto`} disabled={busy} onClick={simulate}>
+        <Bell className="h-4 w-4" /> בדיקת תזכורת אוטומטית
       </button>
       {msg && <p role={msg.ok ? undefined : "alert"} className={`text-xs ${msg.ok ? "text-primary" : "text-destructive"}`}>{msg.text}</p>}
     </div>
