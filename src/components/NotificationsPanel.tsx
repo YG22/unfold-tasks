@@ -22,8 +22,9 @@ const PERM: Record<string, string> = {
 };
 
 async function currentSub() {
-  const reg = await navigator.serviceWorker.getRegistration("/");
-  if (!reg || !(reg.active || reg.installing || reg.waiting)?.scriptURL.endsWith(SW)) return null;
+  if (!(await navigator.serviceWorker.getRegistration("/"))) return null;
+  const reg = await navigator.serviceWorker.ready;
+  if (!reg.active?.scriptURL.endsWith(SW)) return null;
   return reg.pushManager.getSubscription();
 }
 
@@ -31,6 +32,7 @@ export function NotificationsPanel({ userId }: { userId: string }) {
   const [env, setEnv] = useState<Env>("ok");
   const [perm, setPerm] = useState<NotificationPermission>("default");
   const [sub, setSub] = useState<PushSubscription | null>(null);
+  const [checked, setChecked] = useState(false);
   const [s, setS] = useState<Settings>({ enabled: false, remind_before: true, remind_at_start: true, timezone: null });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -43,7 +45,7 @@ export function NotificationsPanel({ userId }: { userId: string }) {
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { setEnv("unsupported"); }
     else if (window.top !== window.self) setEnv("iframe");
     if ("Notification" in window) setPerm(Notification.permission);
-    if ("serviceWorker" in navigator) currentSub().then(setSub).catch(() => {});
+    if ("serviceWorker" in navigator) currentSub().then(setSub).catch(() => {}).finally(() => setChecked(true));
     (async () => {
       const { data } = await supabase.from("notification_settings").select("enabled,remind_before,remind_at_start,timezone").maybeSingle();
       const zone = tz();
@@ -136,7 +138,7 @@ export function NotificationsPanel({ userId }: { userId: string }) {
           <p className="text-xs text-muted-foreground">
             הרשאה: {PERM[perm]}
             <br />
-            מכשיר זה: {on ? "רשום לקבלת התראות" : sub ? "רשום, אבל ההתראות כבויות" : "לא רשום"}
+            מכשיר זה: {!checked ? "בודק…" : on ? "רשום לקבלת התראות" : sub ? "רשום, אבל ההתראות כבויות" : "לא רשום"}
           </p>
           <div className="flex flex-col gap-2 sm:flex-row">
             {on ? (
