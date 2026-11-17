@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { BackupPanel } from "@/components/BackupPanel";
 import {
   CalendarClock,
   Check,
@@ -805,6 +806,16 @@ function Index() {
         </div>
         </>
         )}
+        <BackupPanel
+          tasks={tasks}
+          groups={groups}
+          onRestore={(t, g) => {
+            setTasks(t);
+            setGroups(g);
+            setOpenId(null);
+            setScheduleOpen(null);
+          }}
+        />
       </main>
     </div>
   );
