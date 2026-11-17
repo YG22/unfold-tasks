@@ -189,12 +189,14 @@ export function NotificationsPanel({ userId }: { userId: string }) {
           <p className="text-xs text-muted-foreground">התזכורות האוטומטיות יופעלו בשלב הבא. כרגע אפשר לשלוח התראת בדיקה בלבד.</p>
         </>
       )}
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
       <button className={`${btn2} w-full sm:w-auto`} disabled={busy} onClick={sendAll} aria-busy={busy}>
         <SendHorizontal className="h-4 w-4" /> {busy ? "שולח…" : "שליחת התראה לכל המכשירים הרשומים"}
       </button>
       <button className={`${btn2} w-full sm:w-auto`} disabled={busy} onClick={simulate}>
         <Bell className="h-4 w-4" /> בדיקת תזכורת אוטומטית
       </button>
+      </div>
       {msg && <p role={msg.ok ? undefined : "alert"} className={`text-xs ${msg.ok ? "text-primary" : "text-destructive"}`}>{msg.text}</p>}
     </div>
   );
