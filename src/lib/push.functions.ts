@@ -75,3 +75,36 @@ export const sendTestPush = createServerFn({ method: "POST" })
     await supabaseAdmin.from("push_subscriptions").update({ failure_count: sub.failure_count + 1 }).eq("id", sub.id);
     return { result: "failed" as const, status: r.status };
   });
+
+type Row = { id: string; endpoint: string; p256dh: string; auth: string; failure_count: number };
+
+export const sendTestPushAll = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    // RLS + explicit user filter: only the caller's own subscriptions.
+    const { data: subs, error } = await context.supabase
+      .from("push_subscriptions").select("id,endpoint,p256dh,auth,failure_count")
+      .eq("user_id", context.userId);
+    if (error) throw new Error("LOAD_FAILED");
+    const list = (subs ?? []) as Row[];
+    if (!list.length) return { total: 0, accepted: 0, failed: 0, expired: 0 };
+    const k = await keys();
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const payload = { title: "התראת בדיקה", body: "בדיקה לכל המכשירים הרשומים", tag: "test-all", url: "/" };
+    const results = await Promise.all(list.map(async (sub) => {
+      let status = 0;
+      try { status = (await sendPush(sub, payload, k, SUBJECT)).status; } catch (e) { console.error("push network error", e); }
+      if (status === 404 || status === 410) {
+        await supabaseAdmin.from("push_subscriptions").delete().eq("id", sub.id).eq("user_id", context.userId);
+        return "expired" as const;
+      }
+      if (status >= 200 && status < 300) {
+        await supabaseAdmin.from("push_subscriptions").update({ last_success_at: new Date().toISOString(), failure_count: 0 }).eq("id", sub.id);
+        return "accepted" as const;
+      }
+      await supabaseAdmin.from("push_subscriptions").update({ failure_count: sub.failure_count + 1 }).eq("id", sub.id);
+      return "failed" as const;
+    }));
+    const n = (x: string) => results.filter((r) => r === x).length;
+    return { total: list.length, accepted: n("accepted"), failed: n("failed"), expired: n("expired") };
+  });

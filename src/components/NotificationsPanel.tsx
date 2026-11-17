@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Bell, BellOff, Send } from "lucide-react";
+import { Bell, BellOff, Send, SendHorizontal } from "lucide-react";
 import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
-import { getVapidPublicKey, removeSubscription, saveSubscription, sendTestPush } from "@/lib/push.functions";
+import { getVapidPublicKey, removeSubscription, saveSubscription, sendTestPush, sendTestPushAll } from "@/lib/push.functions";
 import { unb64u } from "@/lib/webpush";
 
 const btn =
@@ -40,6 +40,7 @@ export function NotificationsPanel({ userId }: { userId: string }) {
   const save = useServerFn(saveSubscription);
   const remove = useServerFn(removeSubscription);
   const test = useServerFn(sendTestPush);
+  const testAll = useServerFn(sendTestPushAll);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { setEnv("unsupported"); }
@@ -124,6 +125,23 @@ export function NotificationsPanel({ userId }: { userId: string }) {
     } finally { setBusy(false); }
   };
 
+  const sendAll = async () => {
+    if (busy) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await testAll();
+      if (r.total === 0) { setMsg({ ok: false, text: "אין מכשירים רשומים להתראות בחשבון הזה." }); return; }
+      const parts = [`שירות ההתראות קיבל את ההתראה ל-${r.accepted} מתוך ${r.total} מכשירים.`];
+      if (r.failed) parts.push(`${r.failed} נכשלו.`);
+      if (r.expired) parts.push(`${r.expired} רישומים פגי תוקף הוסרו.`);
+      parts.push("זה לא מאשר שההתראה הוצגה — בדקו במכשיר עצמו.");
+      setMsg({ ok: r.accepted > 0, text: parts.join(" ") });
+    } catch (e) {
+      console.error(e);
+      setMsg({ ok: false, text: "השליחה נכשלה. בדקו את החיבור לאינטרנט ונסו שוב." });
+    } finally { setBusy(false); }
+  };
+
   const on = s.enabled && !!sub && perm === "granted";
 
   return (
@@ -159,6 +177,9 @@ export function NotificationsPanel({ userId }: { userId: string }) {
           <p className="text-xs text-muted-foreground">התזכורות האוטומטיות יופעלו בשלב הבא. כרגע אפשר לשלוח התראת בדיקה בלבד.</p>
         </>
       )}
+      <button className={`${btn2} w-full sm:w-auto`} disabled={busy} onClick={sendAll} aria-busy={busy}>
+        <SendHorizontal className="h-4 w-4" /> {busy ? "שולח…" : "שליחת התראה לכל המכשירים הרשומים"}
+      </button>
       {msg && <p role={msg.ok ? undefined : "alert"} className={`text-xs ${msg.ok ? "text-primary" : "text-destructive"}`}>{msg.text}</p>}
     </div>
   );
