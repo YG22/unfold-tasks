@@ -1,4 +1,11 @@
-export type SubTask = { id: string; title: string; done: boolean };
+export type SubTask = {
+  id: string;
+  title: string;
+  done: boolean;
+  dueDate?: string | null; // YYYY-MM-DD
+  startAt?: string | null; // YYYY-MM-DDTHH:mm (local)
+  durationMin?: number | null;
+};
 export type Task = { id: string; title: string; subtasks: SubTask[]; groupId?: string | null };
 export type Group = { id: string; title: string };
 

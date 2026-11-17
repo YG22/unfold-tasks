@@ -1,6 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, FolderPlus, GripVertical, Pencil, Trash2, X } from "lucide-react";
+import {
+  CalendarClock,
+  Check,
+  ChevronDown,
+  FolderPlus,
+  GripVertical,
+  Pencil,
+  Trash2,
+  X,
+} from "lucide-react";
 import {
   DndContext,
   closestCenter,
@@ -27,11 +36,98 @@ import {
   saveGroups,
   saveTasks,
   type Group,
+  type SubTask,
   type Task,
 } from "@/lib/tasks";
 
+function fmtDate(d: string) {
+  const [y, m, day] = d.split("-");
+  return `${day}/${m}/${y}`;
+}
+
+function scheduleLabel(s: SubTask) {
+  const parts: string[] = [];
+  if (s.dueDate) parts.push(`יעד: ${fmtDate(s.dueDate)}`);
+  if (s.startAt) {
+    const [d, t] = s.startAt.split("T");
+    parts.push(`התחלה: ${fmtDate(d ?? "")} ${t ?? ""}`.trim());
+  }
+  if (s.durationMin) parts.push(`${s.durationMin} דק׳`);
+  return parts.join(" · ");
+}
+
+function ScheduleEditor({
+  sub,
+  onChange,
+}: {
+  sub: SubTask;
+  onChange: (patch: Partial<SubTask>) => void;
+}) {
+  const field =
+    "min-w-0 flex-1 rounded-lg bg-card px-2 py-1.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring";
+  const clear =
+    "rounded-lg p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive";
+  const row = (label: string, input: React.ReactNode, has: boolean, onClear: () => void) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        {input}
+        {has && (
+          <button type="button" aria-label={`ניקוי ${label}`} onClick={onClear} className={clear}>
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+  return (
+    <div className="mt-2 space-y-2 rounded-xl border border-border bg-secondary/60 p-3">
+      {row(
+        "תאריך יעד",
+        <input
+          type="date"
+          value={sub.dueDate ?? ""}
+          onChange={(e) => onChange({ dueDate: e.target.value || null })}
+          className={field}
+        />,
+        !!sub.dueDate,
+        () => onChange({ dueDate: null }),
+      )}
+      {row(
+        "התחלה מתוכננת",
+        <input
+          type="datetime-local"
+          value={sub.startAt ?? ""}
+          onChange={(e) => onChange({ startAt: e.target.value || null })}
+          className={field}
+        />,
+        !!sub.startAt,
+        () => onChange({ startAt: null }),
+      )}
+      {row(
+        "משך (דקות)",
+        <input
+          type="number"
+          min={1}
+          inputMode="numeric"
+          value={sub.durationMin ?? ""}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            onChange({ durationMin: Number.isFinite(n) && n > 0 ? n : null });
+          }}
+          className={field}
+        />,
+        !!sub.durationMin,
+        () => onChange({ durationMin: null }),
+      )}
+    </div>
+  );
+}
+
 function SortableTask({ id, children }: { id: string; children: React.ReactNode }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+  });
   return (
     <section
       ref={setNodeRef}
@@ -58,9 +154,15 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "רשימת המשימות שלי" },
-      { name: "description", content: "אפליקציית משימות פשוטה: כותרת ראשית, תתי משימות, קיבוץ משימות ושמירה אוטומטית." },
+      {
+        name: "description",
+        content: "אפליקציית משימות פשוטה: כותרת ראשית, תתי משימות, קיבוץ משימות ושמירה אוטומטית.",
+      },
       { property: "og:title", content: "רשימת המשימות שלי" },
-      { property: "og:description", content: "נהלו משימות ותתי משימות בקלות, אחדו משימות תחת כותרת משותפת, עם שמירה אוטומטית." },
+      {
+        property: "og:description",
+        content: "נהלו משימות ותתי משימות בקלות, אחדו משימות תחת כותרת משותפת, עם שמירה אוטומטית.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
@@ -162,6 +264,7 @@ function Index() {
   const [groupName, setGroupName] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
   const [groupError, setGroupError] = useState("");
+  const [scheduleOpen, setScheduleOpen] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -274,31 +377,69 @@ function Index() {
                 </select>
               </label>
             )}
-            {task.subtasks.map((s) => (
-              <EditableRow
-                key={s.id}
-                title={s.title}
-                done={s.done}
-                onToggle={() =>
-                  update(task.id, (x) => ({
-                    ...x,
-                    subtasks: x.subtasks.map((y) => (y.id === s.id ? { ...y, done: !y.done } : y)),
-                  }))
-                }
-                onSave={(t) =>
-                  update(task.id, (x) => ({
-                    ...x,
-                    subtasks: x.subtasks.map((y) => (y.id === s.id ? { ...y, title: t } : y)),
-                  }))
-                }
-                onDelete={() =>
-                  update(task.id, (x) => ({
-                    ...x,
-                    subtasks: x.subtasks.filter((y) => y.id !== s.id),
-                  }))
-                }
-              />
-            ))}
+            {task.subtasks.map((s) => {
+              const label = scheduleLabel(s);
+              const editingSchedule = scheduleOpen === s.id;
+              return (
+                <div key={s.id}>
+                  <div className="flex items-center gap-1">
+                    <div className="min-w-0 flex-1">
+                      <EditableRow
+                        title={s.title}
+                        done={s.done}
+                        onToggle={() =>
+                          update(task.id, (x) => ({
+                            ...x,
+                            subtasks: x.subtasks.map((y) =>
+                              y.id === s.id ? { ...y, done: !y.done } : y,
+                            ),
+                          }))
+                        }
+                        onSave={(t) =>
+                          update(task.id, (x) => ({
+                            ...x,
+                            subtasks: x.subtasks.map((y) =>
+                              y.id === s.id ? { ...y, title: t } : y,
+                            ),
+                          }))
+                        }
+                        onDelete={() =>
+                          update(task.id, (x) => ({
+                            ...x,
+                            subtasks: x.subtasks.filter((y) => y.id !== s.id),
+                          }))
+                        }
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="תזמון"
+                      aria-expanded={editingSchedule}
+                      onClick={() => setScheduleOpen(editingSchedule ? null : s.id)}
+                      className={`shrink-0 rounded-lg p-2 transition hover:bg-secondary hover:text-foreground ${
+                        editingSchedule || label ? "text-primary" : "text-muted-foreground"
+                      }`}
+                    >
+                      <CalendarClock className="h-4 w-4" />
+                    </button>
+                  </div>
+                  {label && !editingSchedule && (
+                    <p className="ms-9 mt-0.5 text-xs text-muted-foreground">{label}</p>
+                  )}
+                  {editingSchedule && (
+                    <ScheduleEditor
+                      sub={s}
+                      onChange={(patch) =>
+                        update(task.id, (x) => ({
+                          ...x,
+                          subtasks: x.subtasks.map((y) => (y.id === s.id ? { ...y, ...patch } : y)),
+                        }))
+                      }
+                    />
+                  )}
+                </div>
+              );
+            })}
             <TaskInput
               placeholder="שם תת משימה"
               onAdd={(title) =>
@@ -423,7 +564,9 @@ function Index() {
                       }
                       className="rounded-lg p-1 text-primary transition hover:bg-primary/10"
                     >
-                      <ChevronDown className={`h-5 w-5 transition-transform ${closed ? "-rotate-90" : ""}`} />
+                      <ChevronDown
+                        className={`h-5 w-5 transition-transform ${closed ? "-rotate-90" : ""}`}
+                      />
                     </button>
                     <div className="flex-1">
                       <EditableRow
