@@ -56,6 +56,22 @@ function scheduleLabel(s: SubTask) {
   return parts.join(" · ");
 }
 
+function splitStart(v?: string | null): [string, string] {
+  if (!v) return ["", ""];
+  const [d, t] = v.split("T");
+  return [d ?? "", t ?? ""];
+}
+
+// HH:mm (24h) entry: accepts 930, 9:30, 0930 or 09:30; commits on blur.
+function parseTime(text: string): string | null {
+  const d = text.replace(/\D/g, "");
+  if (!/^\d{3,4}$/.test(d)) return null;
+  const hh = d.length === 3 ? parseInt(d.slice(0, 1), 10) : parseInt(d.slice(0, 2), 10);
+  const mm = parseInt(d.slice(-2), 10);
+  if (hh > 23 || mm > 59) return null;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
 function ScheduleEditor({
   sub,
   onChange,
@@ -64,13 +80,17 @@ function ScheduleEditor({
   onChange: (patch: Partial<SubTask>) => void;
 }) {
   const field =
-    "min-w-0 flex-1 rounded-lg bg-card px-2 py-1.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring";
+    "min-w-0 w-full flex-1 rounded-lg bg-card px-2 py-1.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring";
   const clear =
     "rounded-lg p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive";
+  const [startDate, startTime] = splitStart(sub.startAt);
+  const [timeDraft, setTimeDraft] = useState<string | null>(null);
+  const timeText = timeDraft ?? startTime;
+  const timeInvalid = timeText !== "" && parseTime(timeText) === null;
   const row = (label: string, input: React.ReactNode, has: boolean, onClear: () => void) => (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
-      <div className="flex min-w-0 flex-1 items-center gap-1">
+    <div className="grid grid-cols-1 gap-1 sm:grid-cols-[6.5rem_minmax(0,1fr)] sm:items-center sm:gap-2">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <div className="flex min-w-0 items-center gap-1">
         {input}
         {has && (
           <button type="button" aria-label={`ניקוי ${label}`} onClick={onClear} className={clear}>
@@ -95,12 +115,47 @@ function ScheduleEditor({
       )}
       {row(
         "התחלה מתוכננת",
-        <input
-          type="datetime-local"
-          value={sub.startAt ?? ""}
-          onChange={(e) => onChange({ startAt: e.target.value || null })}
-          className={field}
-        />,
+        <div className="grid min-w-0 flex-1 grid-cols-1 gap-1 sm:grid-cols-2">
+          <input
+            type="date"
+            aria-label="תאריך התחלה"
+            value={startDate}
+            onChange={(e) => {
+              const d = e.target.value;
+              setTimeDraft(null);
+              onChange({ startAt: d ? (startTime ? `${d}T${startTime}` : d) : null });
+            }}
+            className={field}
+          />
+          <input
+            type="text"
+            dir="ltr"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={5}
+            placeholder="HH:MM"
+            aria-label="שעת התחלה (24 שעות)"
+            disabled={!startDate}
+            value={timeText}
+            onChange={(e) => setTimeDraft(e.target.value.replace(/[^\d:]/g, "").slice(0, 5))}
+            onBlur={() => {
+              const t = parseTime(timeText);
+              if (timeText === "") {
+                onChange({ startAt: startDate || null });
+                setTimeDraft(null);
+              } else if (t && startDate) {
+                onChange({ startAt: `${startDate}T${t}` });
+                setTimeDraft(null);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+            className={`${field} text-center tabular-nums disabled:cursor-not-allowed disabled:opacity-50 ${
+              timeInvalid ? "ring-2 ring-destructive/60" : ""
+            }`}
+          />
+        </div>,
         !!sub.startAt,
         () => onChange({ startAt: null }),
       )}
