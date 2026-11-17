@@ -3,6 +3,7 @@ import { CloudUpload, LogIn, LogOut, RefreshCw, UserPlus } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { loadGroups, loadTasks } from "@/lib/tasks";
 import { counts, fromRows, normalizeIds, toRows, verifyContains, type State } from "@/lib/cloud";
+import { NotificationsPanel } from "@/components/NotificationsPanel";
 import { fetchCloud, hasPendingFor, pushChanges, setCloudMode, type useTaskStore } from "@/hooks/useTaskStore";
 
 const btn =
@@ -172,6 +173,7 @@ export function AccountPanel({ store }: { store: Store }) {
             <button type="button" className={btn} onClick={signOut}><LogOut className="h-4 w-4" /> התנתקות</button>
           </div>
           {!store.cloud && <MigratePanel store={store} />}
+          <NotificationsPanel userId={user.id} />
         </>
       ) : (
         <form onSubmit={submit} className="space-y-2">

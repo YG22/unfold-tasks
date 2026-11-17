@@ -15,6 +15,13 @@
       "when": 1794932257446,
       "tag": "0001_task_sync_function",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794938546027,
+      "tag": "0002_push_notifications",
+      "breakpoints": true
     }
   ]
 }
