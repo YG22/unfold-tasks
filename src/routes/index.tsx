@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { BackupPanel } from "@/components/BackupPanel";
+import { AccountPanel } from "@/components/AccountPanel";
 import {
   CalendarClock,
   Check,
@@ -816,6 +817,7 @@ function Index() {
             setScheduleOpen(null);
           }}
         />
+        <AccountPanel />
       </main>
     </div>
   );
