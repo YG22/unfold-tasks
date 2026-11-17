@@ -137,7 +137,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      apply_task_changes: { Args: { p: Json }; Returns: undefined }
     }
     Enums: {
       [_ in never]: never

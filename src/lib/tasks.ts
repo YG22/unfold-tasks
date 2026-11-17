@@ -15,7 +15,10 @@ const GROUPS_KEY = "todo-groups-v1";
 export const newId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : String(Date.now() + Math.random());
+    : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        return (c === "x" ? r : (r & 3) | 8).toString(16);
+      });
 
 export function loadTasks(): Task[] {
   if (typeof window === "undefined") return [];

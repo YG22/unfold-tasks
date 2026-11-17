@@ -2,6 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { BackupPanel } from "@/components/BackupPanel";
 import { AccountPanel } from "@/components/AccountPanel";
+import { useTaskStore } from "@/hooks/useTaskStore";
+import { normalizeIds } from "@/lib/cloud";
 import {
   CalendarClock,
   Check,
@@ -35,11 +37,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { TaskInput } from "@/components/TaskInput";
 import {
-  loadGroups,
-  loadTasks,
   newId,
-  saveGroups,
-  saveTasks,
   type Group,
   type SubTask,
   type Task,
@@ -393,11 +391,10 @@ function EditableRow({
 }
 
 function Index() {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
+  const store = useTaskStore();
+  const { tasks, setTasks, groups, setGroups, ready } = store;
   const [openId, setOpenId] = useState<string | null>(null);
   const [closedGroups, setClosedGroups] = useState<string[]>([]);
-  const [ready, setReady] = useState(false);
   const [creating, setCreating] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
@@ -411,19 +408,6 @@ function Index() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  useEffect(() => {
-    setTasks(loadTasks());
-    setGroups(loadGroups());
-    setReady(true);
-  }, []);
-
-  useEffect(() => {
-    if (ready) saveTasks(tasks);
-  }, [tasks, ready]);
-
-  useEffect(() => {
-    if (ready) saveGroups(groups);
-  }, [groups, ready]);
 
   const update = (id: string, fn: (t: Task) => Task) =>
     setTasks((prev) => prev.map((t) => (t.id === id ? fn(t) : t)));
@@ -808,16 +792,18 @@ function Index() {
         </>
         )}
         <BackupPanel
+          cloud={store.cloud}
           tasks={tasks}
           groups={groups}
-          onRestore={(t, g) => {
+          onRestore={async (t0, g0) => {
+            const { tasks: t, groups: g } = store.cloud ? await normalizeIds({ tasks: t0, groups: g0 }) : { tasks: t0, groups: g0 };
             setTasks(t);
             setGroups(g);
             setOpenId(null);
             setScheduleOpen(null);
           }}
         />
-        <AccountPanel />
+        <AccountPanel store={store} />
       </main>
     </div>
   );

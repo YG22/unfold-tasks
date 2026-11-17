@@ -9,7 +9,9 @@ export function BackupPanel({
   tasks,
   groups,
   onRestore,
+  cloud = false,
 }: {
+  cloud?: boolean;
   tasks: Task[];
   groups: Group[];
   onRestore: (tasks: Task[], groups: Group[]) => void;
@@ -51,7 +53,7 @@ export function BackupPanel({
   return (
     <section className="mt-10 rounded-2xl bg-card p-4 shadow-[var(--shadow-soft)]">
       <h2 className="mb-1 text-sm font-semibold text-foreground">גיבוי ושחזור</h2>
-      <p className="mb-3 text-xs text-muted-foreground">שמרו את כל הנתונים לקובץ, או שחזרו מקובץ גיבוי קודם.</p>
+      <p className="mb-3 text-xs text-muted-foreground">{cloud ? "פועל על נתוני הענן של החשבון. " : ""}שמרו את כל הנתונים לקובץ, או שחזרו מקובץ גיבוי קודם.</p>
       <div className="flex flex-col gap-2 sm:flex-row">
         <button type="button" onClick={exportData} className={btn}>
           <Download className="h-4 w-4" /> ייצוא גיבוי
@@ -79,7 +81,7 @@ export function BackupPanel({
             {pending.groups.length > 0 && <> ו־<b>{pending.groups.length}</b> איחודים</>}.
           </p>
           <p className="mt-1 text-xs text-destructive">
-            השחזור יחליף את כל הנתונים הנוכחיים ({tasks.length} רשימות, {currentSubs} תתי־משימות). לא ניתן לבטל.
+            {cloud ? "השחזור יחליף את כל הנתונים בענן ובכל המכשירים המחוברים" : "השחזור יחליף את כל הנתונים הנוכחיים"} ({tasks.length} רשימות, {currentSubs} תתי־משימות). לא ניתן לבטל.
           </p>
           <div className="mt-3 flex gap-2">
             <button
