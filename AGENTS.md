@@ -9,3 +9,4 @@
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
 - Signed-out users and signed-in users who have not chosen cloud keep localStorage data; cloud mode (per user, per device flag) uses useTaskStore: durable local cache + snapshot diff pushed via the transactional apply_task_changes RPC, realtime refetch with rebase, last-write-wins per record — why: no silent merge, offline-safe, retry-safe stable UUIDs. Local data is never deleted by migration.
+- Planner calculations live in src/lib/planner/ as pure functions (half-open UTC intervals, ambiguous times resolve to the second occurrence like reminders); not wired into the app until a later stage — why: isolated, testable before UI/DB work.
