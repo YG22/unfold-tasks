@@ -213,3 +213,67 @@ describe("tasks, busy time, suggestions", () => {
     expect(resolveCategory("gone", []).name).toBe("ללא קטגוריה");
   });
 });
+
+describe("edge cases (9B.1 final)", () => {
+  const NY = "America/New_York", TK = "Asia/Tokyo";
+  const sub = (o) => ({ id: "s1", title: "t", done: false, ...o });
+  const locz = (t, tz) => { const l = toLocal(t, tz); return `${l.date} ${l.time}`; };
+  it("E1 other zones: New York DST and Tokyo without DST", () => {
+    expect(iso(checkLocal("2026-01-15", "09:00", NY).utc)).toBe("2026-01-15T14:00:00.000Z");
+    expect(iso(checkLocal("2026-07-15", "09:00", NY).utc)).toBe("2026-07-15T13:00:00.000Z");
+    const g = checkLocal("2026-03-08", "02:30", NY);
+    expect(g.status).toBe("nonexistent");
+    expect(locz(g.firstValidUtc, NY)).toBe("2026-03-08 03:00");
+    const a = checkLocal("2026-11-01", "01:30", NY);
+    expect([a.status, a.second - a.first, iso(a.utc)]).toEqual(["ambiguous", 3600_000, "2026-11-01T06:30:00.000Z"]);
+    expect(iso(checkLocal("2026-03-29", "02:30", TK).utc)).toBe("2026-03-28T17:30:00.000Z");
+    expect(["2026-03-08", "2026-03-27", "2026-10-25", "2026-11-01"].every((d) => checkLocal(d, "02:30", TK).status === "normal")).toBe(true);
+  });
+  it("E2 weekly series across spring and autumn keeps 09:00 local with correct UTC", () => {
+    const fri = ev({ date: "2026-03-20", startTime: "09:00", weekdays: [5], until: "2026-10-30" });
+    const o = [...expand([fri], [], "2026-03-20", "2026-03-28", TZ), ...expand([fri], [], "2026-10-23", "2026-11-07", TZ)];
+    expect(o.map((x) => iso(x.interval.start))).toEqual(["2026-03-20T07:00:00.000Z", "2026-03-27T06:00:00.000Z", "2026-10-23T06:00:00.000Z", "2026-10-30T07:00:00.000Z"]);
+    expect(o.every((x) => x.status === "normal" && x.interval.end - x.interval.start === 3600_000)).toBe(true);
+  });
+  it("E3 task starting in repeated autumn hour and ending after it", () => {
+    const p = placeSubtask(sub({ startAt: "2026-10-25T01:30", durationMin: 60 }), TZ);
+    expect(p.interval.start).toBe(wallToUtc("2026-10-25", "01:30", TZ).getTime());
+    expect([iso(p.interval.start), loc(p.interval.end), p.invalidTime]).toEqual(["2026-10-24T23:30:00.000Z", "2026-10-25 02:30", false]);
+    const q = placeSubtask(sub({ startAt: "2026-10-25T01:45", durationMin: 30 }), TZ);
+    expect(loc(q.interval.end)).toBe("2026-10-25 02:15");
+  });
+  it("E4 availability ending inside the spring gap ends at the transition", () => {
+    const rules = [{ weekday: 5, startTime: "00:00", endTime: "02:30" }];
+    const w = availabilityWindows(rules, "2026-03-27", "2026-03-28", TZ);
+    expect(w.length).toBe(1);
+    expect((w[0].end - w[0].start) / 60000).toBe(120);
+    expect(loc(w[0].end)).toBe("2026-03-27 03:00");
+    const r = suggest({ now: 0, from: "2026-03-27", days: 1, tz: TZ, availability: rules, busy: [], durationMin: 60, max: 50 }).map((s) => s.time);
+    expect(r).toEqual(["00:00", "00:15", "00:30", "00:45", "01:00"]);
+  });
+  it("E5 split on a date that already has a single-occurrence exception", () => {
+    const weekly = ev({ weekdays: [0, 2] });
+    const x = [{ eventId: "e1", originalDate: "2026-03-10", type: "change", startTime: "15:00" }, { eventId: "e1", originalDate: "2026-03-03", type: "skip" }];
+    const r = splitSeries(weekly, x, "2026-03-10", "e2", { startTime: "11:00" });
+    expect(r.droppedExceptions.map((d) => d.originalDate)).toEqual(["2026-03-10"]);
+    expect(r.keptExceptions.map((d) => d.originalDate)).toEqual(["2026-03-03"]);
+    const o = expand([r.before, r.after], r.keptExceptions, "2026-03-01", "2026-03-15", TZ);
+    expect(o.map((k) => [k.key, k.startTime, k.status])).toEqual([["e1:2026-03-01", "09:00", "normal"], ["e1:2026-03-08", "09:00", "normal"], ["e2:2026-03-10", "11:00", "normal"]]);
+  });
+  it("E6 calendar placement equals reminder conversion for every 15 min on DST days (IL, Tokyo)", () => {
+    // New York is excluded here: the app's wallToUtc helper differs from the database reminder job there (reported defect); see E7.
+    const days = { [TZ]: ["2026-03-27", "2026-10-25"], [TK]: ["2026-03-27"] };
+    const bad = [];
+    for (const [tz, ds] of Object.entries(days)) for (const d of ds) for (let m = 0; m < 1440; m += 15) {
+      const t = `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+      const p = placeSubtask(sub({ startAt: `${d}T${t}`, durationMin: 45 }), tz);
+      if (p.interval.start !== wallToUtc(d, t, tz).getTime() || p.durationMin !== 45) bad.push(`${tz} ${d} ${t}`);
+    }
+    expect(bad).toEqual([]);
+  });
+  it("E7 New York placement matches the database reminder job (Postgres AT TIME ZONE, checked 2026-11-18)", () => {
+    const at = (d, t) => iso(placeSubtask(sub({ startAt: `${d}T${t}`, durationMin: 45 }), NY).interval.start);
+    expect(at("2026-03-08", "02:30")).toBe("2026-03-08T07:30:00.000Z");
+    expect(at("2026-11-01", "01:30")).toBe("2026-11-01T06:30:00.000Z");
+  });
+});
