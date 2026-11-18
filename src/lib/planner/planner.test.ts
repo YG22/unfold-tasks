@@ -196,6 +196,17 @@ describe("tasks, busy time, suggestions", () => {
     const f = freeTime(w, [{ start: at("2026-05-10", "09:00"), end: at("2026-05-10", "10:00") }]);
     expect(f.map((i) => [loc(i.start), loc(i.end)])).toEqual([["2026-05-10 08:00", "2026-05-10 09:00"], ["2026-05-10 10:00", "2026-05-10 12:00"]]);
   });
+  it("B35 existing subtask at spring-gap time matches reminder instant, data unchanged", () => {
+    const s = sub({ startAt: "2026-03-27T02:30", durationMin: 60 });
+    const p = placeSubtask(s, TZ);
+    expect(p.interval.start).toBe(wallToUtc("2026-03-27", "02:30", TZ).getTime());
+    expect([loc(p.interval.start), loc(p.interval.end)]).toEqual(["2026-03-27 03:30", "2026-03-27 04:30"]);
+    expect(p.invalidTime).toBe(true);
+    expect([s.startAt, s.durationMin, p.durationMin]).toEqual(["2026-03-27T02:30", 60, 60]);
+    expect(validateManualTime("2026-03-27", "02:30", TZ).ok).toBe(false);
+    const r = expand([ev({ date: "2026-03-20", startTime: "02:30", weekdays: [5] })], [], "2026-03-27", "2026-03-28", TZ)[0].reservation;
+    expect([loc(r.start), loc(r.end)]).toEqual(["2026-03-27 03:00", "2026-03-27 04:00"]);
+  });
   it("B34 categories: built-in, custom, deleted → ללא קטגוריה", () => {
     expect(resolveCategory("work", []).name).toBe("עבודה");
     expect(resolveCategory("c1", [{ id: "c1", name: "ספורט", color: "rose" }]).name).toBe("ספורט");

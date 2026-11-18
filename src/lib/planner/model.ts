@@ -1,7 +1,7 @@
 // Planner calculations: recurrence, exceptions, travel, busy/free time, suggestions, tasks, categories.
 // Pure and deterministic; not used by the app yet.
 import type { SubTask } from "../tasks";
-import { addDays, checkLocal, dueBoundaryUtc, merge, MIN, overlaps, subtract, toMinutes, weekday, fromMinutes, type Interval } from "./time";
+import { addDays, checkLocal, dueBoundaryUtc, merge, MIN, overlaps, subtract, toMinutes, weekday, fromMinutes, toLocal, type Interval } from "./time";
 
 export const DISPLAY_FALLBACK_MIN = 30;
 export const SUGGESTION_STEP_MIN = 15;
@@ -130,7 +130,13 @@ export function placeSubtask(s: SubTask, tz: string): TaskPlacement {
   if (!s.startAt || s.startAt.length < 16) return { ...base, place: "drawer", interval: null, invalidTime: false };
   const c = checkLocal(s.startAt.slice(0, 10), s.startAt.slice(11, 16), tz);
   // Nonexistent times match the existing reminder behaviour (shift forward); flagged for the UI.
-  const start = c.status === "nonexistent" ? c.firstValidUtc : c.utc;
+  // Gap time: shift forward by the gap length using the pre-transition offset (02:30 -> 03:30), same instant as wallToUtc.
+  let start: number;
+  if (c.status === "nonexistent") {
+    const naive = (d: string, t: string) => Date.parse(d + "T00:00:00Z") + toMinutes(t) * MIN;
+    const prev = toLocal(c.firstValidUtc - MIN, tz);
+    start = c.firstValidUtc - MIN + (naive(s.startAt.slice(0, 10), s.startAt.slice(11, 16)) - naive(prev.date, prev.time));
+  } else start = c.utc;
   return { ...base, place: "calendar", interval: { start, end: start + durationMin * MIN }, invalidTime: c.status === "nonexistent" };
 }
 
