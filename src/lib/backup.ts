@@ -1,7 +1,9 @@
 import type { Group, SubTask, Task } from "./tasks";
+import { hasSections, parsePlannerSections, type PlannerSections } from "./planner/backup";
 
 export const BACKUP_APP = "todo-lists";
-export const BACKUP_VERSION = 1;
+/** 1 = tasks only; 2 = tasks plus an optional "planner" object (missing sections are left unchanged on restore). */
+export const BACKUP_VERSION = 2;
 
 export type Backup = {
   app: typeof BACKUP_APP;
@@ -9,10 +11,13 @@ export type Backup = {
   exportedAt: string;
   tasks: Task[];
   groups: Group[];
+  planner?: PlannerSections;
 };
 
-export function buildBackup(tasks: Task[], groups: Group[]): Backup {
-  return { app: BACKUP_APP, version: BACKUP_VERSION, exportedAt: new Date().toISOString(), tasks, groups };
+export function buildBackup(tasks: Task[], groups: Group[], planner?: PlannerSections | null): Backup {
+  const b: Backup = { app: BACKUP_APP, version: BACKUP_VERSION, exportedAt: new Date().toISOString(), tasks, groups };
+  if (planner) b.planner = planner;
+  return b;
 }
 
 export function backupFilename(d = new Date()) {
@@ -22,12 +27,12 @@ export function backupFilename(d = new Date()) {
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const START = /^\d{4}-\d{2}-\d{2}(T([01]\d|2[0-3]):[0-5]\d)?$/;
-type Raw = { id?: unknown; title?: unknown; done?: unknown; subtasks?: unknown; groupId?: unknown; dueDate?: unknown; startAt?: unknown; durationMin?: unknown; app?: unknown; version?: unknown; tasks?: unknown; groups?: unknown };
+type Raw = { id?: unknown; title?: unknown; done?: unknown; subtasks?: unknown; groupId?: unknown; dueDate?: unknown; startAt?: unknown; durationMin?: unknown; app?: unknown; version?: unknown; tasks?: unknown; groups?: unknown; planner?: unknown };
 const isObj = (v: unknown): v is Raw => !!v && typeof v === "object" && !Array.isArray(v);
 const str = (v: unknown) => typeof v === "string" && v.length > 0;
 
 export type ParseResult =
-  | { ok: true; tasks: Task[]; groups: Group[]; subtaskCount: number }
+  | { ok: true; tasks: Task[]; groups: Group[]; subtaskCount: number; version: number; planner: PlannerSections | null }
   | { ok: false; error: string };
 
 export function parseBackup(text: string): ParseResult {
@@ -83,5 +88,12 @@ export function parseBackup(text: string): ParseResult {
     subtaskCount += subtasks.length;
     tasks.push({ id: t.id as string, title: t.title, subtasks, groupId: (gid as string | null | undefined) ?? null });
   }
-  return { ok: true, tasks, groups, subtaskCount };
+  // Version 1 never carries planner data; restoring it leaves the planner untouched.
+  let planner: PlannerSections | null = null;
+  if (data.version >= 2 && data.planner !== undefined) {
+    const p = parsePlannerSections(data.planner);
+    if (!p.ok) return { ok: false, error: p.error };
+    planner = hasSections(p.sections) ? p.sections : null;
+  }
+  return { ok: true, tasks, groups, subtaskCount, version: data.version, planner };
 }

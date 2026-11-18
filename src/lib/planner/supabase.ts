@@ -10,7 +10,7 @@ const fail = (e: { message: string; code?: string } | null) => {
   throw e.code ? new PlannerServerError(e.message) : new PlannerNetworkError(e.message);
 };
 
-export function supabaseTransport(client: SupabaseClient, uid: string): PlannerTransport {
+export function supabaseTransport(client: SupabaseClient, uid: string): PlannerTransport & { restore(p: Record<string, unknown>): Promise<unknown> } {
   return {
     async fetchAll() {
       try {
@@ -32,6 +32,14 @@ export function supabaseTransport(client: SupabaseClient, uid: string): PlannerT
       catch (e) { throw new PlannerNetworkError(String(e)); }
       fail(r.error as never);
       return ((r.data as { results: ActionResult[] } | null)?.results ?? []) as ActionResult[];
+    },
+    /** restore_preview / restore through apply_planner_changes (one server transaction, op_id idempotent). */
+    async restore(p: Record<string, unknown>) {
+      let r;
+      try { r = await client.rpc("apply_planner_changes" as never, { p } as never); }
+      catch (e) { throw new PlannerNetworkError(String(e)); }
+      fail(r.error as never);
+      return r.data as unknown;
     },
     subscribe(onChange) {
       const ch = client.channel(`planner-${uid}-${Math.random().toString(36).slice(2)}`);

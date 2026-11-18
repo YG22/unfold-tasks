@@ -82,6 +82,63 @@ function fakeServer() {
     const row = { ...cur, deleted_at: a.type === "delete" ? "2026-11-18T00:00:00Z" : null, version: cur.version + 1 };
     m.set(a.id, row); return st(a.id, a.type === "delete" ? "deleted_ok" : "undeleted", row);
   }
+  // Same answers as _planner_restore: omitted sections untouched, versions checked, op_id idempotent, all or nothing.
+  const FULL = { ...CONTENT, events: [...CONTENT.events, "split_from_event_id"], exceptions: [...CONTENT.exceptions, "superseded_by_event_id", "superseded_at"] };
+  const norm = (t, o) => JSON.stringify(FULL[t].map((k) => { const v = o[k] ?? null; return k === "superseded_at" && v ? new Date(v).toISOString() : v; }));
+  const ops = new Map();
+  function restore(uid, u, p) {
+    const d = p.data;
+    if (!d || typeof d !== "object") throw new PlannerServerError("planner: restore data must be an object");
+    if (p.type === "restore") {
+      if (!p.op_id || p.confirmed !== true) throw new PlannerServerError("planner: restore needs op_id and confirmation");
+      const prev = ops.get(uid + ":" + p.op_id); if (prev) return { ...prev, repeated: true };
+    }
+    const sections = Object.fromEntries([...TABLES, "settings"].map((k) => [k, k in d ? "included" : "omitted"]));
+    const plan = {}, conflicts = [];
+    for (const t of TABLES) {
+      if (!(t in d)) continue;
+      const ids = new Set([...d[t].map((r) => r.id), ...[...u[t].values()].filter((r) => !r.deleted_at).map((r) => r.id)]);
+      if (new Set(d[t].map((r) => r.id)).size !== d[t].length) throw new PlannerServerError("planner: duplicate id in restore");
+      plan[t] = [...ids].map((id) => {
+        const cur = u[t].get(id), rec = d[t].find((r) => r.id === id), v = cur?.version ?? 0;
+        if (p.type === "restore" && p.expected?.[t]?.[id] !== v) conflicts.push({ table: t, id, expected: p.expected?.[t]?.[id] ?? null, current: v });
+        return { id, version: v, action: !rec ? "delete" : !cur ? "add" : !cur.deleted_at && norm(t, cur) === norm(t, { ...(DEF[t] ?? {}), ...rec }) ? "same" : "replace" };
+      });
+    }
+    if ("settings" in d) { plan.settings_version = u.settings?.version ?? 0; if (p.type === "restore" && p.expected?.settings !== plan.settings_version) conflicts.push({ table: "settings", expected: p.expected?.settings, current: plan.settings_version }); }
+    if (p.type === "restore_preview") return { status: "preview", sections, plan };
+    if (conflicts.length) return { status: "conflict", changed: conflicts };
+    const backup = structuredClone({ categories: [...u.categories], events: [...u.events], exceptions: [...u.exceptions], availability: [...u.availability], settings: u.settings });
+    const ownerBackup = new Map(owner);
+    try {
+      const counts = {};
+      for (const t of TABLES) {
+        if (!(t in d)) continue;
+        const c = { added: 0, replaced: 0, same: 0, deleted: 0 };
+        for (const it of plan[t]) {
+          const rec = d[t].find((r) => r.id === it.id), cur = u[t].get(it.id);
+          const row = (base) => ({ ...base, ...Object.fromEntries(FULL[t].map((k) => [k, ({ ...(DEF[t] ?? {}), ...rec })[k] ?? null])), id: it.id, deleted_at: null });
+          if (it.action === "same") c.same++;
+          else if (it.action === "add") { if (owner.has(it.id)) throw new PlannerServerError("planner: restore conflict on " + it.id); u[t].set(it.id, { ...row({}), version: 1 }); owner.set(it.id, uid); c.added++; }
+          else if (it.action === "replace") { u[t].set(it.id, { ...row(cur), version: cur.version + 1 }); c.replaced++; }
+          else { u[t].set(it.id, { ...cur, deleted_at: "2026-11-18T00:00:00Z", version: cur.version + 1 }); c.deleted++; }
+        }
+        counts[t] = c;
+      }
+      // Foreign keys are checked at the end of the transaction, like the deferred constraints.
+      const live = (t, id) => { const r = u[t].get(id); return r && !r.deleted_at; };
+      for (const e of u.events.values()) if (!e.deleted_at && ((e.category_id && !live("categories", e.category_id)) || (e.split_from_event_id && !u.events.get(e.split_from_event_id)))) throw new PlannerServerError("foreign key violation");
+      for (const x of u.exceptions.values()) if (!x.deleted_at && !u.events.get(x.event_id)) throw new PlannerServerError("foreign key violation");
+      if ("settings" in d) { const v = u.settings?.version ?? 0; u.settings = { default_view: "week", suggestion_days_off: [], timezone: null, ...d.settings, version: v + 1 }; }
+      const res = { status: "applied", op_id: p.op_id, sections, counts };
+      ops.set(uid + ":" + p.op_id, res); srv.applied++;
+      for (const f of srv.listeners) if (f.uid === uid) f.cb();
+      return res;
+    } catch (e) {
+      for (const t of TABLES) u[t] = new Map(backup[t]); u.settings = backup.settings; owner.clear(); for (const [k, v] of ownerBackup) owner.set(k, v);
+      throw e;
+    }
+  }
   srv.transport = (uid) => ({
     async fetchAll() {
       if (srv.offline) throw new PlannerNetworkError("Failed to fetch");
@@ -104,6 +161,14 @@ function fakeServer() {
         if (!(e instanceof PlannerNetworkError)) { for (const t of TABLES) u[t] = new Map(backup[t]); u.settings = backup.settings; owner.clear(); for (const [k, v] of ownerBackup) owner.set(k, v); }
         throw e;
       }
+    },
+    async restore(p) {
+      srv.calls++;
+      if (srv.offline) throw new PlannerNetworkError("Failed to fetch");
+      if (srv.failRestore) { srv.failRestore = false; throw new PlannerServerError("planner: restore failed"); }
+      const r = restore(uid, user(uid), p);
+      if (srv.loseNextResponse) { srv.loseNextResponse = false; throw new PlannerNetworkError("connection reset after commit"); }
+      return r;
     },
     subscribe(cb) { const l = { uid, cb }; srv.listeners.add(l); return () => srv.listeners.delete(l); },
   });

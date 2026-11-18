@@ -793,6 +793,7 @@ function Index() {
         )}
         <BackupPanel
           cloud={store.cloud}
+          userId={store.user?.id ?? null}
           tasks={tasks}
           groups={groups}
           onRestore={async (t0, g0) => {
