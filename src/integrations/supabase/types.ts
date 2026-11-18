@@ -44,6 +44,276 @@ export type Database = {
         }
         Relationships: []
       }
+      planner_availability: {
+        Row: {
+          created_at: string
+          deleted_at: string | null
+          end_min: number
+          ends_next_day: boolean
+          id: string
+          start_min: number
+          updated_at: string
+          user_id: string
+          version: number
+          weekday: number
+        }
+        Insert: {
+          created_at?: string
+          deleted_at?: string | null
+          end_min: number
+          ends_next_day?: boolean
+          id: string
+          start_min: number
+          updated_at?: string
+          user_id?: string
+          version?: number
+          weekday: number
+        }
+        Update: {
+          created_at?: string
+          deleted_at?: string | null
+          end_min?: number
+          ends_next_day?: boolean
+          id?: string
+          start_min?: number
+          updated_at?: string
+          user_id?: string
+          version?: number
+          weekday?: number
+        }
+        Relationships: []
+      }
+      planner_categories: {
+        Row: {
+          color: string
+          created_at: string
+          deleted_at: string | null
+          id: string
+          name: string
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          color: string
+          created_at?: string
+          deleted_at?: string | null
+          id: string
+          name: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Update: {
+          color?: string
+          created_at?: string
+          deleted_at?: string | null
+          id?: string
+          name?: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: []
+      }
+      planner_events: {
+        Row: {
+          category_builtin: string | null
+          category_id: string | null
+          created_at: string
+          date: string
+          deleted_at: string | null
+          duration_min: number
+          id: string
+          notes: string | null
+          split_from_event_id: string | null
+          start_min: number
+          title: string
+          travel_after_min: number
+          travel_before_min: number
+          until: string | null
+          updated_at: string
+          user_id: string
+          version: number
+          weekdays: number[] | null
+        }
+        Insert: {
+          category_builtin?: string | null
+          category_id?: string | null
+          created_at?: string
+          date: string
+          deleted_at?: string | null
+          duration_min: number
+          id: string
+          notes?: string | null
+          split_from_event_id?: string | null
+          start_min: number
+          title: string
+          travel_after_min?: number
+          travel_before_min?: number
+          until?: string | null
+          updated_at?: string
+          user_id?: string
+          version?: number
+          weekdays?: number[] | null
+        }
+        Update: {
+          category_builtin?: string | null
+          category_id?: string | null
+          created_at?: string
+          date?: string
+          deleted_at?: string | null
+          duration_min?: number
+          id?: string
+          notes?: string | null
+          split_from_event_id?: string | null
+          start_min?: number
+          title?: string
+          travel_after_min?: number
+          travel_before_min?: number
+          until?: string | null
+          updated_at?: string
+          user_id?: string
+          version?: number
+          weekdays?: number[] | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planner_events_category_id_user_id_fkey"
+            columns: ["category_id", "user_id"]
+            isOneToOne: false
+            referencedRelation: "planner_categories"
+            referencedColumns: ["id", "user_id"]
+          },
+          {
+            foreignKeyName: "planner_events_split_from_event_id_user_id_fkey"
+            columns: ["split_from_event_id", "user_id"]
+            isOneToOne: false
+            referencedRelation: "planner_events"
+            referencedColumns: ["id", "user_id"]
+          },
+        ]
+      }
+      planner_exceptions: {
+        Row: {
+          created_at: string
+          deleted_at: string | null
+          event_id: string
+          id: string
+          new_date: string | null
+          new_duration_min: number | null
+          new_start_min: number | null
+          original_date: string
+          superseded_at: string | null
+          superseded_by_event_id: string | null
+          type: string
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          created_at?: string
+          deleted_at?: string | null
+          event_id: string
+          id: string
+          new_date?: string | null
+          new_duration_min?: number | null
+          new_start_min?: number | null
+          original_date: string
+          superseded_at?: string | null
+          superseded_by_event_id?: string | null
+          type: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Update: {
+          created_at?: string
+          deleted_at?: string | null
+          event_id?: string
+          id?: string
+          new_date?: string | null
+          new_duration_min?: number | null
+          new_start_min?: number | null
+          original_date?: string
+          superseded_at?: string | null
+          superseded_by_event_id?: string | null
+          type?: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planner_exceptions_event_id_user_id_fkey"
+            columns: ["event_id", "user_id"]
+            isOneToOne: false
+            referencedRelation: "planner_events"
+            referencedColumns: ["id", "user_id"]
+          },
+          {
+            foreignKeyName: "planner_exceptions_superseded_by_event_id_user_id_fkey"
+            columns: ["superseded_by_event_id", "user_id"]
+            isOneToOne: false
+            referencedRelation: "planner_events"
+            referencedColumns: ["id", "user_id"]
+          },
+        ]
+      }
+      planner_operations: {
+        Row: {
+          created_at: string
+          kind: string
+          op_id: string
+          result: Json
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          kind: string
+          op_id: string
+          result: Json
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          kind?: string
+          op_id?: string
+          result?: Json
+          user_id?: string
+        }
+        Relationships: []
+      }
+      planner_settings: {
+        Row: {
+          created_at: string
+          default_view: string
+          suggestion_days_off: number[]
+          timezone: string | null
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          created_at?: string
+          default_view?: string
+          suggestion_days_off?: number[]
+          timezone?: string | null
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Update: {
+          created_at?: string
+          default_view?: string
+          suggestion_days_off?: number[]
+          timezone?: string | null
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: []
+      }
       push_subscriptions: {
         Row: {
           auth: string
@@ -251,6 +521,50 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      _planner_cols: { Args: { full_: boolean; t: string }; Returns: string[] }
+      _planner_content: {
+        Args: { cols: string[]; j: Json; t: string }
+        Returns: Json
+      }
+      _planner_defaults: { Args: { t: string }; Returns: Json }
+      _planner_get: {
+        Args: { rid: string; t: string; uid: string }
+        Returns: Json
+      }
+      _planner_insert: {
+        Args: {
+          cols: string[]
+          content: Json
+          rid: string
+          t: string
+          uid: string
+        }
+        Returns: number
+      }
+      _planner_record: { Args: { a: Json; uid: string }; Returns: Json }
+      _planner_restore: {
+        Args: { apply_: boolean; p: Json; uid: string }
+        Returns: Json
+      }
+      _planner_settings: { Args: { a: Json; uid: string }; Returns: Json }
+      _planner_split: { Args: { a: Json; uid: string }; Returns: Json }
+      _planner_status: {
+        Args: { cur: Json; rid: string; s: string }
+        Returns: Json
+      }
+      _planner_table: { Args: { t: string }; Returns: string }
+      _planner_update: {
+        Args: {
+          cols: string[]
+          content: Json
+          del: string
+          rid: string
+          t: string
+          uid: string
+        }
+        Returns: undefined
+      }
+      apply_planner_changes: { Args: { p: Json }; Returns: Json }
       apply_task_changes: { Args: { p: Json }; Returns: undefined }
       claim_due_reminders: {
         Args: { p_grace?: string; p_now?: string }
@@ -264,6 +578,7 @@ export type Database = {
           user_id: string
         }[]
       }
+      planner_days_ok: { Args: { a: number[] }; Returns: boolean }
     }
     Enums: {
       [_ in never]: never
