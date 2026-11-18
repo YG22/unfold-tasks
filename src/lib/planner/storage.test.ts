@@ -320,3 +320,85 @@ describe("retry while a batch is in flight", () => {
     expect([row.name, row.version, s.status(), s.getConflicts().length]).toEqual(["ג", 2, "saved", 0]);
   });
 });
+
+describe("reliability hardening", () => {
+  const { cloudRecoveryKey } = require("./sync");
+  const deferred = () => { let resolve, reject; const p = new Promise((a, b) => { resolve = a; reject = b; }); return { p, resolve, reject }; };
+  it("R1 unreadable pending edits: raw copy kept, nothing sent or loaded, error + recovery state", async () => {
+    const srv = fakeServer(), uid = uuid(), kv = memKV({ [cloudKey(uuid())]: "OTHER-USER" });
+    kv.setItem(cloudKey(uid), "{broken");
+    const e = fakeEnv(); const s = new PlannerSync(uid, kv, srv.transport(uid), e.env);
+    let fetched = 0; const t = srv.transport(uid); const orig = t.fetchAll; t.fetchAll = () => { fetched++; return orig(); };
+    s.start(); await e.settle();
+    expect([s.recoveryRequired(), s.status(), s.recoveryData(), kv.getItem(cloudKey(uid)), srv.calls]).toEqual([true, "error", "{broken", "{broken", 0]);
+    expect(s.upsert("categories", cat()).ok).toBe(false);
+    expect(s.get().categories.length).toBe(0);
+    expect([...kv.m.values()]).toContain("OTHER-USER");
+  });
+  it("R2 an existing recovery copy is never overwritten; valid JSON with a bad queue also counts as unreadable", () => {
+    const uid = uuid(), kv = memKV({ [cloudRecoveryKey(uid)]: "FIRST" });
+    kv.setItem(cloudKey(uid), JSON.stringify({ v: 1, server: null, queue: [{ type: "upsert" }], conflicts: [], rejected: [] }));
+    const s = new PlannerSync(uid, kv, fakeServer().transport(uid), fakeEnv().env);
+    expect([s.recoveryRequired(), kv.getItem(cloudRecoveryKey(uid))]).toEqual([true, "FIRST"]);
+  });
+  it("R3 reload stays in recovery until the user resumes; resuming keeps the recovery copy", async () => {
+    const srv = fakeServer(), uid = uuid(), kv = memKV({ [cloudKey(uid)]: "garbage" });
+    new PlannerSync(uid, kv, srv.transport(uid), fakeEnv().env);
+    const e = fakeEnv(); const s = new PlannerSync(uid, kv, srv.transport(uid), e.env);
+    s.start(); await e.settle();
+    expect(s.status()).toBe("error");
+    s.discardUnreadableAndResume(); await e.settle();
+    expect([s.recoveryRequired(), s.status(), kv.getItem(cloudRecoveryKey(uid))]).toEqual([false, "saved", "garbage"]);
+    expect(JSON.parse(kv.getItem(cloudKey(uid))).v).toBe(1);
+  });
+  it("R4+R5 a save that never answers times out, edits stay queued, retry succeeds once", async () => {
+    const srv = fakeServer(), uid = uuid(), t = srv.transport(uid), real = t.apply; let n = 0;
+    t.apply = (a) => (++n === 1 ? new Promise(() => {}) : real(a));
+    const e = fakeEnv(); const s = new PlannerSync(uid, memKV(), t, e.env, { timeoutMs: 5000 });
+    s.start(); await e.settle(); const c = cat();
+    s.upsert("categories", c);
+    await new Promise((r) => setTimeout(r, 0)); await e.settle();
+    expect([n >= 2, srv.applied, s.pendingCount(), s.status(), srv.user(uid).categories.get(c.id).version]).toEqual([true, 1, 0, "saved", 1]);
+  });
+  it("R4b timeout is reported and edits kept while the connection stays bad", async () => {
+    const srv = fakeServer(), uid = uuid(), t = srv.transport(uid);
+    t.apply = () => new Promise(() => {});
+    const e = fakeEnv(); const s = new PlannerSync(uid, memKV(), t, e.env);
+    s.start(); await e.settle(); s.upsert("categories", cat());
+    for (let i = 0; i < 3; i++) await e.settle();
+    expect([s.lastAttemptTimedOut(), s.pendingCount(), s.status() === "saved"]).toEqual([true, 1, false]);
+  });
+  it("R6 a late answer after a timeout cannot clear newer edits or change state", async () => {
+    const srv = fakeServer(), uid = uuid(), t = srv.transport(uid), real = t.apply; let late; let n = 0;
+    t.apply = (a) => { if (++n === 1) { late = deferred(); const r = real(a); return late.p.then(() => r); } return real(a); };
+    const e = fakeEnv(); const s = new PlannerSync(uid, memKV(), t, e.env);
+    s.start(); await e.settle(); const c = cat();
+    s.upsert("categories", c); await e.settle(); // first try applied on server but timed out; retry answered "unchanged"
+    e.setOnline(false); s.upsert("categories", { ...c, name: "חדש" });
+    const before = JSON.stringify([s.get(), s.pendingCount(), s.getConflicts()]);
+    late.resolve(); await new Promise((r) => setTimeout(r, 0));
+    expect(JSON.stringify([s.get(), s.pendingCount(), s.getConflicts()])).toBe(before);
+    e.setOnline(true); await e.settle();
+    expect([srv.user(uid).categories.get(c.id).name, srv.user(uid).categories.get(c.id).version, s.status(), srv.applied]).toEqual(["חדש", 2, "saved", 2]);
+  });
+  it("R7 repeated timeouts then success: exactly one write", async () => {
+    const srv = fakeServer(), uid = uuid(), t = srv.transport(uid), real = t.apply; let n = 0;
+    t.apply = (a) => (++n <= 3 ? new Promise(() => {}) : real(a));
+    const e = fakeEnv(); const s = new PlannerSync(uid, memKV(), t, e.env);
+    s.start(); await e.settle(); s.upsert("categories", cat());
+    for (let i = 0; i < 6; i++) await e.settle();
+    expect([n, srv.applied, s.status(), s.pendingCount()]).toEqual([4, 1, "saved", 0]);
+  });
+  it("R8 account switch while a save is pending: late answer is ignored, other account untouched", async () => {
+    const srv = fakeServer(), kv = memKV(), A = uuid(), B = uuid(), tA = srv.transport(A), real = tA.apply; let hold;
+    tA.apply = (a) => { hold = deferred(); const r = real(a); return hold.p.then(() => r); };
+    const eA = fakeEnv(); const a = new PlannerSync(A, kv, tA, eA.env, { timeoutMs: 1e9 });
+    a.start(); await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0));
+    a.upsert("categories", cat()); const p = a.flush();
+    const savedA = kv.getItem(cloudKey(A));
+    a.dispose();
+    const b = await setup(B, srv, kv);
+    hold.resolve(); await p;
+    expect([kv.getItem(cloudKey(A)), JSON.parse(savedA).queue.length, b.s.get().categories.length, b.s.status()]).toEqual([savedA, 1, 0, "saved"]);
+  });
+});

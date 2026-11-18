@@ -16,6 +16,8 @@ export type Action =
 export type ActionResult = { id: string; status: string; version: number | null; current: (Row & SettingsRow) | null };
 
 export class PlannerNetworkError extends Error {}
+/** The request did not finish in time. Treated like a network failure: edits stay queued and are retried. */
+export class PlannerTimeoutError extends PlannerNetworkError {}
 /** Server refused the whole batch (validation or database error); nothing in it was applied. */
 export class PlannerServerError extends Error {}
 
@@ -34,6 +36,27 @@ export type Rejected = { action: Action; message: string };
 
 type Persisted = { v: 1; server: ServerSnapshot | null; queue: Action[]; conflicts: Conflict[]; rejected: Rejected[] };
 export const cloudKey = (uid: string) => `planner-cloud-v1-${uid}`;
+/** Unreadable pending-edit data is copied here once (per user) and never overwritten automatically. */
+export const cloudRecoveryKey = (uid: string) => `planner-cloud-v1-${uid}-unreadable`;
+export const DEFAULT_TIMEOUT_MS = 20_000;
+
+function validPersisted(p: unknown): p is Persisted {
+  if (!p || typeof p !== "object") return false;
+  const x = p as Persisted;
+  const okAction = (a: unknown) => !!a && typeof a === "object" && typeof (a as Action).type === "string" && typeof (a as Action).base_version === "number";
+  return x.v === 1 && Array.isArray(x.queue) && x.queue.every(okAction) && Array.isArray(x.conflicts ?? []) && Array.isArray(x.rejected ?? [])
+    && (x.server === null || (typeof x.server === "object" && TABLES.every((t) => Array.isArray(x.server![t]))));
+}
+
+/** Rejects with PlannerTimeoutError if the promise has not settled in time. The late result is ignored. */
+function withTimeout<T>(p: Promise<T>, ms: number, env: Env, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const t = env.setTimeout(() => { if (!done) { done = true; reject(new PlannerTimeoutError(`${what} timed out after ${ms} ms`)); } }, ms);
+    p.then((v) => { if (!done) { done = true; env.clearTimeout(t); resolve(v); } },
+      (e) => { if (!done) { done = true; env.clearTimeout(t); reject(e); } });
+  });
+}
 
 const OK = new Set(["created", "updated", "unchanged", "deleted_ok", "undeleted", "split"]);
 const FAIL = new Set(["stale", "conflict", "missing", "deleted"]);
@@ -58,12 +81,37 @@ export class PlannerSync {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private rtTimer: ReturnType<typeof setTimeout> | undefined;
   private retryDelay = 1000;
+  private recovery = false;
+  private writeSeq = 0;
+  private timedOut = false;
+  private timeoutMs: number;
 
-  constructor(private uid: string, private kv: KV, private t: PlannerTransport, private env: Env) {
-    try {
-      const p = JSON.parse(kv.getItem(cloudKey(uid)) ?? "null") as Persisted | null;
-      if (p?.v === 1) { this.server = p.server; this.queue = p.queue ?? []; this.conflicts = p.conflicts ?? []; this.rejected = p.rejected ?? []; }
-    } catch { /* unreadable cache: start from the server; pending edits cannot be recovered from it */ }
+  constructor(private uid: string, private kv: KV, private t: PlannerTransport, private env: Env, opts: { timeoutMs?: number } = {}) {
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const raw = kv.getItem(cloudKey(uid));
+    if (raw == null) return;
+    let p: unknown = null;
+    try { p = JSON.parse(raw); } catch { p = null; }
+    if (validPersisted(p)) { this.server = p.server; this.queue = p.queue; this.conflicts = p.conflicts ?? []; this.rejected = p.rejected ?? []; return; }
+    // Unreadable pending edits: keep the raw copy, send nothing, refresh nothing, and say so.
+    this.recovery = true;
+    this.lastError = "Saved planner changes on this device could not be read.";
+    if (kv.getItem(cloudRecoveryKey(uid)) == null) kv.setItem(cloudRecoveryKey(uid), raw);
+  }
+  /** True when this device's pending planner edits were unreadable. Sync is paused until a future screen decides. */
+  recoveryRequired() { return this.recovery; }
+  /** The preserved unreadable data (for a future recovery screen), or null. */
+  recoveryData(): string | null { return this.kv.getItem(cloudRecoveryKey(this.uid)); }
+  /**
+   * User-confirmed: continue from the server without the unreadable edits. The recovery copy is kept;
+   * only the broken working cache is replaced.
+   */
+  discardUnreadableAndResume() {
+    if (!this.recovery) return;
+    this.recovery = false; this.lastError = "";
+    this.server = null; this.queue = []; this.conflicts = []; this.rejected = [];
+    this.persist(); this.emit();
+    void this.refresh().then(() => this.flush());
   }
 
   // ---------- lifecycle ----------
@@ -88,12 +136,13 @@ export class PlannerSync {
   subscribe(fn: () => void) { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; }
   private emit() { if (!this.disposed) for (const f of this.listeners) f(); }
   private persist() {
-    if (this.disposed) return;
+    if (this.disposed || this.recovery) return; // never overwrite unreadable data
     this.kv.setItem(cloudKey(this.uid), JSON.stringify({ v: 1, server: this.server, queue: this.queue, conflicts: this.conflicts, rejected: this.rejected } satisfies Persisted));
   }
 
   // ---------- reading ----------
   status(): PlannerSyncStatus {
+    if (this.recovery) return "error";
     if (!this.loaded && !this.server) return this.env.online() ? "loading" : "offline";
     if (this.conflicts.length) return "conflict";
     if (this.rejected.length || this.lastError) return "error";
@@ -106,6 +155,8 @@ export class PlannerSync {
   getRejected(): Rejected[] { return this.rejected; }
   pendingCount() { return this.queue.length; }
   error() { return this.lastError; }
+  /** The last save attempt timed out; edits are still queued and will be retried. */
+  lastAttemptTimedOut() { return this.timedOut; }
 
   /** Rows as the user should see them: server data with pending and conflicted local edits on top. Includes soft-deleted rows. */
   private rows(): { tables: Record<TableName, Map<string, Row>>; settings: SettingsRow | null } {
@@ -149,7 +200,7 @@ export class PlannerSync {
     }
     return v;
   }
-  private blocked(keys: string[]) { return this.conflicts.some((c) => keys.includes(c.key)); }
+  private blocked(keys: string[]) { return this.recovery || this.conflicts.some((c) => keys.includes(c.key)); }
 
   // ---------- writing ----------
   private enqueue(a: Action) {
@@ -251,11 +302,14 @@ export class PlannerSync {
     this.retryTimer = this.env.setTimeout(() => void this.flush(), ms);
   }
   /** Re-reads the user's planner rows. Pending edits are never replaced; they stay on top until the server answers them. */
-  async refresh() {
-    if (this.disposed) return;
+  async refresh(): Promise<void> {
+    if (this.disposed || this.recovery) return;
+    const seq = this.writeSeq;
     try {
-      const snap = await this.t.fetchAll();
-      if (this.disposed) return;
+      const snap = await withTimeout(this.t.fetchAll(), this.timeoutMs, this.env, "load");
+      if (this.disposed || this.recovery) return;
+      // A save answered while this read was running: the read may predate it, so read again instead of going back in time.
+      if (seq !== this.writeSeq) return this.refresh();
       this.server = snap; this.loaded = true;
       if (this.lastError && !this.rejected.length) this.lastError = "";
       this.persist(); this.emit();
@@ -266,7 +320,7 @@ export class PlannerSync {
   }
 
   async flush(): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || this.recovery) return;
     if (this.flushing) { this.again = true; return; }
     if (!this.queue.length || !this.env.online()) { this.emit(); return; }
     this.flushing = true; this.emit();
@@ -276,17 +330,18 @@ export class PlannerSync {
       for (const a of batch) this.inflight.add(a);
       let results: Array<ActionResult | Error>;
       try {
-        results = await this.t.apply(batch);
+        results = await withTimeout(this.t.apply(batch), this.timeoutMs, this.env, "save");
       } catch (e) {
         if (e instanceof PlannerNetworkError) throw e;
         // One bad action rolls back the whole batch: send them one by one to find it.
         results = [];
         for (const a of batch) {
-          try { results.push((await this.t.apply([a]))[0]!); }
+          try { results.push((await withTimeout(this.t.apply([a]), this.timeoutMs, this.env, "save"))[0]!); }
           catch (x) { if (x instanceof PlannerNetworkError) throw x; results.push(x as Error); }
         }
       }
       if (this.disposed) return;
+      this.writeSeq++;
       batch.forEach((a, i) => {
         const r = results[i];
         if (!r) return;
@@ -314,9 +369,9 @@ export class PlannerSync {
         this.rejected.push({ action: a, message: `unexpected status ${r.status}` });
       });
       this.retryDelay = 1000;
-      this.lastError = "";
+      this.lastError = ""; this.timedOut = false;
     } catch (e) {
-      if (e instanceof PlannerNetworkError) networkDown = true;
+      if (e instanceof PlannerNetworkError) { networkDown = true; this.timedOut = e instanceof PlannerTimeoutError; }
       else this.lastError = String((e as Error).message ?? e);
     } finally {
       this.flushing = false;
