@@ -3,7 +3,7 @@
 // pending cloud edits (planner-cloud-v1-<uid>) and never deletes guest data.
 import { content, settingsToRow, TABLES, toRow, validRecord, validSettings, type PlannerData, type Row, type TableName } from "./data";
 import { loadGuest, type KV } from "./guest";
-import { cloudKey, PlannerNetworkError, type Action, type ActionResult, type PlannerTransport, type ServerSnapshot } from "./sync";
+import { cloudKey, PlannerNetworkError, PlannerServerError, type Action, type ActionResult, type PlannerTransport, type ServerSnapshot } from "./sync";
 
 export const migrationKey = (uid: string) => `planner-migration-v1-${uid}`;
 /** Written after a verified migration; records which account received this device's guest data. Guest data itself stays. */
@@ -140,48 +140,49 @@ export function previewMigration(input: {
   const blockers: Blocker[] = []; const items: PlanItem[] = [];
   const idMap = Object.fromEntries(TABLES.map((t) => [t, new Map<string, string>()])) as Record<TableName, Map<string, string>>;
   const skip = new Set<string>();
-  for (const t of TABLES) for (const r of rows[t]) {
+  const references: MigrationPreview["references"] = [];
+  const out = Object.fromEntries(TABLES.map((t) => [t, [] as Row[]])) as Record<TableName, Row[]>;
+  // Dependency order (categories, events parents first, exceptions, availability): each record is compared with the
+  // cloud only after its references are remapped, so records from an earlier run that got new ids (also one whose
+  // progress journal is gone) are recognised as already present instead of being added again.
+  const gDepth = (id: string): number => { let d = 0, cur = rows.events.find((e) => e.id === id); while (cur?.["split_from_event_id"] && d < 1000) { d++; cur = rows.events.find((e) => e.id === cur!["split_from_event_id"]); } return d; };
+  const ORDER: TableName[] = ["categories", "events", "exceptions", "availability"];
+  for (const t of ORDER) for (const r of t === "events" ? [...rows.events].sort((x, y) => gDepth(x.id) - gDepth(y.id)) : rows[t]) {
+    const n: Row = { ...r };
+    const refs: { field: string; from: string; to: string }[] = [];
+    for (const [f, to] of REFS[t]) {
+      const v = r[f] as string | null; if (v == null) continue;
+      const m = idMap[to].get(v);
+      if (m && m !== v) { n[f] = m; refs.push({ field: f, from: v, to: m }); }
+    }
+    const same = (c: Row, id: string) => sameRow(c, { ...n, id });
     const c = cloudRows[t].get(r.id);
     let status: ItemStatus = "add", reason: PlanItem["reason"], to = r.id;
     if (otherAccount) { status = "add-remapped"; reason = "other-account"; to = derivedId(uid, r.id); }
     else if (pend.has(r.id)) { status = "add-remapped"; reason = "id-in-pending-edit"; to = derivedId(uid, r.id); }
     else if (c) {
       // Same id, same content: the record is already in the account (e.g. an earlier, interrupted migration).
-      const same = sameRow(c, r);
-      if (same && !c.deleted_at) status = "already-present";
-      else if (same && c.deleted_at) {
+      if (same(c, r.id) && !c.deleted_at) status = "already-present";
+      else if (same(c, r.id)) {
         const choice = res.deletedInCloud?.[r.id];
         blockers.push({ kind: "deleted-in-cloud", table: t, id: r.id });
         if (choice === "skip") skip.add(`${t}:${r.id}`);
         status = "add-remapped"; reason = "id-in-cloud"; to = derivedId(uid, r.id);
       } else { status = "add-remapped"; reason = "id-in-cloud"; to = derivedId(uid, r.id); }
+    } else {
+      // Not visible under its own id; an earlier run may have saved it under its derived id (id owned by another account).
+      const d = cloudRows[t].get(derivedId(uid, r.id));
+      if (d && !d.deleted_at && same(d, d.id)) { status = "already-present"; to = d.id; }
     }
-    // A derived id can itself already exist from an earlier interrupted run.
-    if (status === "add-remapped") {
-      const d = cloudRows[t].get(to);
-      if (d && !d.deleted_at) status = "already-present";
+    // A derived id can itself already exist: identical -> already present, anything else -> next derived id.
+    for (let k = 0; status === "add-remapped" && k < 5; k++) {
+      const d = cloudRows[t].get(to); if (!d) break;
+      if (!d.deleted_at && same(d, to)) { status = "already-present"; break; }
+      to = derivedId(uid, to);
     }
-    idMap[t].set(r.id, to);
+    n.id = to; idMap[t].set(r.id, to); out[t].push(n);
+    for (const x of refs) references.push({ table: t, id: n.id, ...x });
     items.push({ table: t, guestId: r.id, cloudId: to, status, ...(reason ? { reason } : {}) });
-  }
-  // Remap references; re-check "already present" against the remapped content.
-  const references: MigrationPreview["references"] = [];
-  const out = Object.fromEntries(TABLES.map((t) => [t, [] as Row[]])) as Record<TableName, Row[]>;
-  for (const t of TABLES) for (const r of rows[t]) {
-    const n: Row = { ...r, id: idMap[t].get(r.id)! };
-    for (const [f, to] of REFS[t]) {
-      const v = r[f] as string | null; if (v == null) continue;
-      const m = idMap[to].get(v);
-      if (m && m !== v) { n[f] = m; references.push({ table: t, id: n.id, field: f, from: v, to: m }); }
-    }
-    out[t].push(n);
-  }
-  for (const it of items) if (it.status === "already-present") {
-    const n = out[it.table].find((r) => r.id === it.cloudId)!, c = cloudRows[it.table].get(it.cloudId)!;
-    if (!sameRow(c, n)) {
-      // Something else lives under the derived id: fall back to a second derived id.
-      it.cloudId = derivedId(uid, it.cloudId); it.status = "add-remapped"; n.id = it.cloudId;
-    }
   }
   const splitLinks = out.events.filter((r) => r["split_from_event_id"]).length + out.exceptions.filter((r) => r["superseded_by_event_id"]).length;
   if (splitLinks && input.splitHistorySupported === false) blockers.push({ kind: "split-history-unsupported", count: splitLinks });
@@ -289,15 +290,27 @@ export async function runMigration(o: {
       writeJournal(kv, j);
     }
     // Strictly in order, in groups of at most BATCH that never mix a record with the records that point to it.
+    // After an "id already in use" refusal the group is resent one record at a time to find the record whose id
+    // another account owns. Safe because apply_planner_changes runs as one transaction with no exception handlers:
+    // the refused group was rolled back completely, and records sent again answer "unchanged" if they exist.
+    let single = false;
     for (let guard = 0; guard < 10_000; guard++) {
       if (o.currentUid() !== p.uid) return { status: "account-changed" };
       const todo = j.actions.filter((a) => !j!.done.includes(aKey(a)));
       if (!todo.length) break;
-      const batch = groupOf(todo);
+      const batch = single ? [todo[0]!] : groupOf(todo);
       let res: ActionResult[];
       try { res = await t.apply(batch as Action[]); }
       catch (e) {
         if (e instanceof PlannerNetworkError) return { status: "interrupted", done: j.done.length, remaining: j.actions.length - j.done.length, error: String(e) };
+        if (isIdInUse(e) && batch[0]!.type === "upsert") {
+          if (batch.length > 1) { single = true; continue; }
+          if (Object.keys(j.remaps ?? {}).length < 1000) {
+            // This record's id belongs to another account: give it an id of its own, update every later reference.
+            const a = batch[0] as { id: string };
+            remapId(j, a.id, derivedId(p.uid, a.id)); writeJournal(kv, j); single = false; continue;
+          }
+        }
         j.state = "failed"; j.failed.push({ key: "batch", status: String((e as Error).message ?? e) }); writeJournal(kv, j);
         return { status: "failed", failed: j.failed, error: String((e as Error).message ?? e) };
       }
@@ -347,6 +360,7 @@ function groupOf(todo: MigAction[]): MigAction[] {
   for (const a of todo) { if (out.length >= BATCH || tierOf(a, todo) !== tier) break; out.push(a); }
   return out;
 }
+const isIdInUse = (e: unknown) => e instanceof PlannerServerError && /id already in use/.test(e.message);
 const REF_FIELDS = ["category_id", "split_from_event_id", "event_id", "superseded_by_event_id"];
 function remapId(j: Journal, from: string, to: string) {
   j.remaps = { ...(j.remaps ?? {}), [from]: to };

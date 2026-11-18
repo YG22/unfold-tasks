@@ -302,4 +302,88 @@ describe("guest -> account planner migration", () => {
     expect(r[0].status).toBe("conflict");
     expect(row(s, "events", d.a.id).title).toBe("שלי");
   });
+
+  // ---- ids of categories / availability owned by another account (ordinary save raises "id already in use") ----
+  const takeB = (srv, table, id) => srv.other(B, [{ type: "upsert", table, id, base_version: 0, data: table === "categories" ? { name: "B", color: "slate" } : { weekday: 2, start_min: 60, end_min: 120 } }]);
+  const clashGuest = () => {
+    const ca = cat({ name: "עבודה" }), cb = cat({ name: "לימודים", color: "blue" });
+    const ea = ev({ categoryId: ca.id }), eb = ev({ categoryId: ca.id, title: "שני" }), ec = ev({ categoryId: cb.id, weekdays: [2], until: "2026-05-01" });
+    const xa = { id: uuid(), eventId: ec.id, originalDate: "2026-03-03", type: "skip" };
+    const v1 = { id: uuid(), weekday: 1, startMin: 480, endMin: 720, endsNextDay: false }, v2 = { id: uuid(), weekday: 3, startMin: 1320, endMin: 60, endsNextDay: true };
+    return { ca, cb, ea, eb, ec, xa, v1, v2, guest: { categories: [ca, cb], events: [ea, eb, ec], exceptions: [xa], availability: [v1, v2] } };
+  };
+  const live = (s, t) => [...s.srv.user(A)[t].values()].filter((r) => !r.deleted_at);
+
+  it("category id owned by another account: new id, every dependent event follows, other account untouched", async () => {
+    const d = clashGuest(); const s = await setup(d.guest); const p = await s.preview();
+    await takeB(s.srv, "categories", d.ca.id); const before = structuredClone(s.srv.user(B).categories.get(d.ca.id));
+    expect(await s.run(p)).toEqual({ status: "verified", added: 8, alreadyPresent: 0 });
+    const to = derivedId(A, d.ca.id);
+    expect(row(s, "categories", to).name).toBe("עבודה"); expect(s.srv.user(A).categories.has(d.ca.id)).toBe(false);
+    expect(row(s, "events", d.ea.id).category_id).toBe(to); expect(row(s, "events", d.eb.id).category_id).toBe(to);
+    expect(row(s, "events", d.ec.id).category_id).toBe(d.cb.id);
+    expect(s.srv.user(B).categories.get(d.ca.id)).toEqual(before);
+    expect(JSON.parse(s.kv.getItem(migrationKey(A))).remaps).toEqual({ [d.ca.id]: to });
+  });
+
+  it("availability id owned by another account: own id, no duplicate or lost windows", async () => {
+    const d = clashGuest(); const s = await setup(d.guest); const p = await s.preview();
+    await takeB(s.srv, "availability", d.v2.id);
+    expect((await s.run(p)).status).toBe("verified");
+    const av = live(s, "availability"); expect(av.length).toBe(2);
+    expect(av.map((r) => r.id).sort()).toEqual([d.v1.id, derivedId(A, d.v2.id)].sort());
+    expect(row(s, "availability", derivedId(A, d.v2.id))).toMatchObject({ weekday: 3, start_min: 1320, end_min: 60, ends_next_day: true });
+    expect(s.srv.user(B).availability.get(d.v2.id).weekday).toBe(2);
+  });
+
+  it("several collisions in one migration (two categories, availability, event); links and split fields kept", async () => {
+    const d = clashGuest(); const s = await setup(d.guest); const p = await s.preview();
+    await takeB(s.srv, "categories", d.ca.id); await takeB(s.srv, "categories", d.cb.id); await takeB(s.srv, "availability", d.v1.id);
+    await s.srv.other(B, [{ type: "upsert", table: "events", id: d.ec.id, base_version: 0, data: { title: "B", date: "2026-01-01", start_min: 0, duration_min: 30 } }]);
+    expect((await s.run(p)).status).toBe("verified");
+    const ec = row(s, "events", derivedId(A, d.ec.id));
+    expect(ec.category_id).toBe(derivedId(A, d.cb.id)); expect(ec.weekdays).toEqual([2]); expect(ec.until).toBe("2026-05-01");
+    expect(row(s, "exceptions", d.xa.id).event_id).toBe(derivedId(A, d.ec.id));
+    expect(live(s, "categories").length).toBe(2); expect(live(s, "events").length).toBe(3); expect(live(s, "availability").length).toBe(2);
+    expect(Object.keys(JSON.parse(s.kv.getItem(migrationKey(A))).remaps).length).toBe(4);
+  });
+
+  it("collision then network loss: guest data kept, resume finishes with the saved new id and no duplicates", async () => {
+    const d = clashGuest(); const s = await setup(d.guest); const p = await s.preview();
+    await takeB(s.srv, "categories", d.ca.id);
+    const guestBefore = s.gkv.getItem(GUEST_KEY);
+    // Cut the connection right after the per-record retry has remapped the category.
+    let n = 0; const t2 = { ...s.t, apply: async (a) => { if (++n === 4) throw new PlannerNetworkError("offline"); return s.t.apply(a); } };
+    const r1 = await s.run(p, { transport: t2 }); expect(r1.status).toBe("interrupted");
+    expect(JSON.parse(s.kv.getItem(migrationKey(A))).remaps).toEqual({ [d.ca.id]: derivedId(A, d.ca.id) });
+    expect(s.gkv.getItem(GUEST_KEY)).toBe(guestBefore);
+    expect((await s.run(p)).status).toBe("verified");
+    expect(live(s, "categories").length).toBe(2); expect(live(s, "events").length).toBe(3);
+    expect(row(s, "events", d.ea.id).category_id).toBe(derivedId(A, d.ca.id));
+    // Repeating the migration changes nothing.
+    expect((await s.run(p)).status).toBe("nothing-to-do"); expect(live(s, "events").length).toBe(3);
+    expect(s.gkv.getItem(GUEST_KEY)).toBe(guestBefore);
+  });
+
+  it("existing cloud records of this account stay unchanged when a collision is remapped", async () => {
+    const d = clashGuest(); const s = await setup(d.guest);
+    const mine = uuid(); await s.srv.other(A, [{ type: "upsert", table: "categories", id: mine, base_version: 0, data: { name: "שלי", color: "teal" } }]);
+    const p = await s.preview(); await takeB(s.srv, "availability", d.v1.id);
+    const before = structuredClone(s.srv.user(A).categories.get(mine));
+    expect((await s.run(p)).status).toBe("verified");
+    expect(s.srv.user(A).categories.get(mine)).toEqual(before); expect(live(s, "categories").length).toBe(3);
+  });
+
+  it("repeated migration with the progress journal gone (other device / cleared storage): nothing added twice", async () => {
+    const d = clashGuest(); const s = await setup(d.guest); const p = await s.preview();
+    await takeB(s.srv, "categories", d.ca.id); await takeB(s.srv, "availability", d.v2.id);
+    await s.srv.other(B, [{ type: "upsert", table: "events", id: d.ec.id, base_version: 0, data: { title: "B", date: "2026-01-01", start_min: 0, duration_min: 30 } }]);
+    expect((await s.run(p)).status).toBe("verified");
+    const counts = () => ["categories", "events", "exceptions", "availability"].map((t) => live(s, t).length);
+    const before = counts();
+    const p2 = previewMigration({ uid: A, guestKv: guestKV(d.guest), cloudKv: memKV(), cloud: await s.t.fetchAll() });
+    expect(p2.expected.add).toBe(0); expect(p2.expected.alreadyPresent).toBe(8); expect(p2.canMigrate).toBe(false);
+    expect(counts()).toEqual(before);
+  });
 });
+
