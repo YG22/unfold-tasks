@@ -11,12 +11,12 @@ export const GUEST_MIGRATED_KEY = "planner-guest-v1-migrated";
 
 export type ItemStatus = "add" | "add-remapped" | "already-present";
 export type PlanItem = { table: TableName; guestId: string; cloudId: string; status: ItemStatus; reason?: "id-in-cloud" | "id-in-pending-edit" | "other-account" };
-export type InvalidItem = { table: TableName | "settings"; id: string | null; reason: "invalid" | "missing-reference" };
+export type InvalidItem = { table: TableName | "settings"; id: string | null; reason: "invalid" | "missing-reference" | "invalid-split" | "circular-split" };
 export type Blocker =
   | { kind: "invalid-records"; count: number }
   | { kind: "deleted-in-cloud"; table: TableName; id: string }
   | { kind: "settings-differ" }
-  | { kind: "split-links"; count: number }
+  | { kind: "split-history-unsupported"; count: number }
   | { kind: "guest-unreadable" };
 export type Resolutions = {
   /** Skip the listed invalid guest records (they stay in guest storage). */
@@ -25,8 +25,6 @@ export type Resolutions = {
   deletedInCloud?: Record<string, "skip" | "copy">;
   /** When both sides have different settings. */
   settings?: "keep-cloud" | "use-guest";
-  /** The save function cannot store split links; series dates and times are kept, only the "split from" link is lost. */
-  acceptSplitLinkLoss?: boolean;
 };
 export type MigrationPreview = {
   uid: string; token: string; cloudFingerprint: string; guestFingerprint: string;
@@ -37,8 +35,10 @@ export type MigrationPreview = {
   settings: "none" | "add" | "same" | "differ";
   blockers: Blocker[]; unresolved: Blocker[]; canMigrate: boolean;
   expected: { add: number; alreadyPresent: number; skipped: number; settings: "add" | "update" | "keep" };
-  actions: Action[];
+  actions: MigAction[];
 };
+/** Create-only save that keeps split links (events and exceptions); everything else uses the ordinary create. */
+export type MigAction = Action | { type: "migrate_insert"; table: "events" | "exceptions"; id: string; base_version: 0; data: Record<string, unknown> };
 
 // ---------- helpers ----------
 const h32 = (s: string, seed: number) => {
@@ -63,7 +63,6 @@ const REFS: Record<TableName, [string, TableName][]> = {
   categories: [], events: [["category_id", "categories"], ["split_from_event_id", "events"]],
   exceptions: [["event_id", "events"], ["superseded_by_event_id", "events"]], availability: [],
 };
-const SENT_REFS: Record<string, boolean> = { category_id: true, event_id: true };
 
 function pendingIds(kv: KV, uid: string): Set<string> {
   const out = new Set<string>();
@@ -80,7 +79,11 @@ function migratedTo(kv: KV): string | null {
 }
 
 // ---------- preview (read-only) ----------
-export function previewMigration(input: { uid: string; guestKv: KV; cloudKv: KV; cloud: ServerSnapshot; resolutions?: Resolutions }): MigrationPreview {
+export function previewMigration(input: {
+  uid: string; guestKv: KV; cloudKv: KV; cloud: ServerSnapshot; resolutions?: Resolutions;
+  /** False when the backend has no migrate_insert: anything with split history is then blocked, never sent without it. */
+  splitHistorySupported?: boolean;
+}): MigrationPreview {
   const { uid, cloud } = input; const res = input.resolutions ?? {};
   const g = loadGuest(input.guestKv);
   const raw = parseRaw(input.guestKv);
@@ -96,12 +99,43 @@ export function previewMigration(input: { uid: string; guestKv: KV; cloudKv: KV;
 
   // Rows with guest ids; drop records whose references point nowhere (guest, cloud or built-in).
   const rows = Object.fromEntries(TABLES.map((t) => [t, g.data[t].map((r) => toRow(t, r as never))])) as Record<TableName, Row[]>;
-  const exists = (t: TableName, id: string) => rows[t].some((r) => r.id === id) || (cloudRows[t].has(id) && !cloudRows[t].get(id)!.deleted_at);
-  for (const t of TABLES) rows[t] = rows[t].filter((r) => {
-    const bad = REFS[t].some(([f, to]) => r[f] != null && !exists(to, r[f] as string));
-    if (bad) invalid.push({ table: t, id: r.id, reason: "missing-reference" });
-    return !bad;
-  });
+  // Repeat until stable: dropping a record can orphan the records that point to it.
+  for (let changed = true; changed;) {
+    changed = false;
+    const live = (t: TableName, id: string) => rows[t].some((r) => r.id === id);
+    const exists = (t: TableName, id: string) => live(t, id) || (cloudRows[t].has(id) && !cloudRows[t].get(id)!.deleted_at);
+    const bad = new Map<string, InvalidItem["reason"]>();
+    const evById = new Map(rows.events.map((r) => [r.id, r]));
+    for (const t of TABLES) for (const r of rows[t]) {
+      // Category / event links may point to the user's own cloud records; split history only within the guest data.
+      if (REFS[t].some(([f, to]) => r[f] != null && !(f === "split_from_event_id" || f === "superseded_by_event_id" ? live(to, r[f] as string) : exists(to, r[f] as string))))
+        bad.set(`${t}:${r.id}`, "missing-reference");
+    }
+    for (const r of rows.events) {
+      if (bad.has(`events:${r.id}`) || r["split_from_event_id"] == null) continue;
+      // Walk the chain: a loop or a series that does not end before its successor starts is invalid.
+      const seen = new Set<string>([r.id]); let cur: Row | undefined = r; let reason: InvalidItem["reason"] | null = null;
+      while (cur && cur["split_from_event_id"] != null) {
+        const p = evById.get(cur["split_from_event_id"] as string);
+        if (!p) break;
+        if (seen.has(p.id)) { reason = "circular-split"; break; }
+        seen.add(p.id); cur = p;
+      }
+      const parent = evById.get(r["split_from_event_id"] as string);
+      if (!reason && parent && (parent["until"] == null || (r["date"] as string) <= (parent["until"] as string))) reason = "invalid-split";
+      if (reason) bad.set(`events:${r.id}`, reason);
+    }
+    for (const x of rows.exceptions) {
+      if (bad.has(`exceptions:${x.id}`) || x["superseded_by_event_id"] == null) continue;
+      const n = evById.get(x["superseded_by_event_id"] as string);
+      const okTime = typeof x["superseded_at"] === "string" && !Number.isNaN(Date.parse(x["superseded_at"] as string));
+      if (!n || n["split_from_event_id"] !== x["event_id"] || (x["original_date"] as string) < (n["date"] as string) || !okTime) bad.set(`exceptions:${x.id}`, "invalid-split");
+    }
+    for (const t of TABLES) rows[t] = rows[t].filter((r) => {
+      const why = bad.get(`${t}:${r.id}`); if (!why) return true;
+      invalid.push({ table: t, id: r.id, reason: why }); changed = true; return false;
+    });
+  }
 
   const blockers: Blocker[] = []; const items: PlanItem[] = [];
   const idMap = Object.fromEntries(TABLES.map((t) => [t, new Map<string, string>()])) as Record<TableName, Map<string, string>>;
@@ -113,7 +147,7 @@ export function previewMigration(input: { uid: string; guestKv: KV; cloudKv: KV;
     else if (pend.has(r.id)) { status = "add-remapped"; reason = "id-in-pending-edit"; to = derivedId(uid, r.id); }
     else if (c) {
       // Same id, same content: the record is already in the account (e.g. an earlier, interrupted migration).
-      const same = content(c) === content(r);
+      const same = sameRow(c, r);
       if (same && !c.deleted_at) status = "already-present";
       else if (same && c.deleted_at) {
         const choice = res.deletedInCloud?.[r.id];
@@ -144,13 +178,13 @@ export function previewMigration(input: { uid: string; guestKv: KV; cloudKv: KV;
   }
   for (const it of items) if (it.status === "already-present") {
     const n = out[it.table].find((r) => r.id === it.cloudId)!, c = cloudRows[it.table].get(it.cloudId)!;
-    if (content(stripSplit(c)) !== content(stripSplit(n))) {
+    if (!sameRow(c, n)) {
       // Something else lives under the derived id: fall back to a second derived id.
       it.cloudId = derivedId(uid, it.cloudId); it.status = "add-remapped"; n.id = it.cloudId;
     }
   }
   const splitLinks = out.events.filter((r) => r["split_from_event_id"]).length + out.exceptions.filter((r) => r["superseded_by_event_id"]).length;
-  if (splitLinks) blockers.push({ kind: "split-links", count: splitLinks });
+  if (splitLinks && input.splitHistorySupported === false) blockers.push({ kind: "split-history-unsupported", count: splitLinks });
   if (invalid.length) blockers.push({ kind: "invalid-records", count: invalid.length });
   if (g.unreadable) blockers.push({ kind: "guest-unreadable" });
 
@@ -165,20 +199,26 @@ export function previewMigration(input: { uid: string; guestKv: KV; cloudKv: KV;
       : b.kind === "invalid-records" ? !res.skipInvalid
       : b.kind === "deleted-in-cloud" ? !res.deletedInCloud?.[b.id]
       : b.kind === "settings-differ" ? !res.settings
-      : !res.acceptSplitLinkLoss);
+      : true);
 
   // Actions: create-only (base_version 0). The server answers "unchanged" for an identical existing record and
   // "conflict" for a different one, so nothing is ever overwritten and retries never duplicate.
-  const actions: Action[] = [];
+  const actions: MigAction[] = [];
   let skipped = invalid.length;
-  for (const t of TABLES) for (const n of out[t]) {
+  const depth = (id: string): number => { let d = 0, cur = out.events.find((e) => e.id === id); while (cur?.["split_from_event_id"] && d < 1000) { d++; cur = out.events.find((e) => e.id === cur!["split_from_event_id"]); } return d; };
+  const ordered: [TableName, Row][] = [
+    ...out.categories.map((r) => ["categories", r] as [TableName, Row]),
+    ...out.events.map((r) => ["events", r] as [TableName, Row]).sort((x, y) => depth(x[1].id) - depth(y[1].id)),
+    ...out.exceptions.map((r) => ["exceptions", r] as [TableName, Row]),
+    ...out.availability.map((r) => ["availability", r] as [TableName, Row]),
+  ];
+  for (const [t, n] of ordered) {
     const it = items.find((i) => i.table === t && i.cloudId === n.id)!;
     if (it.status === "already-present") continue;
     if (skip.has(`${t}:${it.guestId}`)) { skipped++; continue; }
     const { id, ...data } = n;
-    for (const f of ["split_from_event_id", "superseded_by_event_id", "superseded_at"]) delete data[f];
-    for (const [f] of REFS[t]) if (!SENT_REFS[f]) delete data[f];
-    actions.push({ type: "upsert", table: t, id, base_version: 0, data });
+    if (t === "events" || t === "exceptions") actions.push({ type: "migrate_insert", table: t, id, base_version: 0, data });
+    else actions.push({ type: "upsert", table: t, id, base_version: 0, data });
   }
   const settingsPlan = settings === "add" ? "add" : settings === "differ" && res.settings === "use-guest" ? "update" : "keep";
   if (settingsPlan !== "keep") actions.push({ type: "settings", base_version: cs?.version ?? 0, data: gs });
@@ -190,11 +230,15 @@ export function previewMigration(input: { uid: string; guestKv: KV; cloudKv: KV;
     guestCounts: count((t) => g.data[t].length), cloudCounts: count((t) => cloud[t].filter((r) => !r.deleted_at).length),
     items, invalid, remapped: items.filter((i) => i.cloudId !== i.guestId).map((i) => ({ table: i.table, from: i.guestId, to: i.cloudId })),
     references, settings, blockers, unresolved, canMigrate: unresolved.length === 0 && actions.length > 0,
-    expected: { add: actions.filter((a) => a.type === "upsert").length, alreadyPresent: items.filter((i) => i.status === "already-present").length, skipped, settings: settingsPlan },
+    expected: { add: actions.filter((a) => a.type === "upsert" || a.type === "migrate_insert").length, alreadyPresent: items.filter((i) => i.status === "already-present").length, skipped, settings: settingsPlan },
     actions,
   };
 }
-const stripSplit = (r: Row): Row => { const { split_from_event_id: _a, superseded_by_event_id: _b, superseded_at: _c, ...x } = r; return x as Row; };
+/** Content equality; timestamps compared as instants (the database returns +00:00 where the guest stored Z). */
+function norm(r: Row): Row { const x = { ...r }; if (typeof x["superseded_at"] === "string") x["superseded_at"] = new Date(x["superseded_at"] as string).toISOString(); return x; }
+const sameRow = (a: Row, b: Row) => content(norm(a)) === content(norm(b));
+const sameVal = (k: string, a: unknown, b: unknown) =>
+  k === "superseded_at" && typeof a === "string" && typeof b === "string" ? Date.parse(a) === Date.parse(b) : JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 function parseRaw(kv: KV): Record<TableName, unknown[]> & { hasSettings: boolean; settingsInvalid: boolean } {
   let d: Record<string, unknown> = {};
   try { const p = JSON.parse(kv.getItem("planner-guest-v1") ?? "{}"); if (p && typeof p === "object") d = p; } catch { /* reported as unreadable */ }
@@ -209,8 +253,8 @@ export function confirmMigration(p: MigrationPreview): Confirmation | null {
   return p.canMigrate ? { confirmed: true, token: p.token } : null;
 }
 
-type Journal = { v: 1; token: string; uid: string; actions: Action[]; done: string[]; failed: { key: string; status: string }[]; state: "running" | "verified" | "failed" };
-const aKey = (a: Action) => (a.type === "settings" ? "settings" : `${(a as { table: string }).table}:${(a as { id: string }).id}`);
+type Journal = { v: 1; token: string; uid: string; actions: MigAction[]; remaps?: Record<string, string>; done: string[]; failed: { key: string; status: string }[]; state: "running" | "verified" | "failed" };
+const aKey = (a: MigAction) => (a.type === "settings" ? "settings" : `${(a as { table: string }).table}:${(a as { id: string }).id}`);
 export type MigrationResult =
   | { status: "verified"; added: number; alreadyPresent: number }
   | { status: "not-confirmed" | "preview-stale" | "account-changed" | "busy" | "nothing-to-do" }
@@ -244,12 +288,14 @@ export async function runMigration(o: {
       j = { v: 1, token: p.token, uid: p.uid, actions: p.actions, done: [], failed: [], state: "running" };
       writeJournal(kv, j);
     }
-    const todo = j.actions.filter((a) => !j!.done.includes(aKey(a)));
-    for (let i = 0; i < todo.length; i += BATCH) {
+    // Strictly in order, in groups of at most BATCH that never mix a record with the records that point to it.
+    for (let guard = 0; guard < 10_000; guard++) {
       if (o.currentUid() !== p.uid) return { status: "account-changed" };
-      const batch = todo.slice(i, i + BATCH);
+      const todo = j.actions.filter((a) => !j!.done.includes(aKey(a)));
+      if (!todo.length) break;
+      const batch = groupOf(todo);
       let res: ActionResult[];
-      try { res = await t.apply(batch); }
+      try { res = await t.apply(batch as Action[]); }
       catch (e) {
         if (e instanceof PlannerNetworkError) return { status: "interrupted", done: j.done.length, remaining: j.actions.length - j.done.length, error: String(e) };
         j.state = "failed"; j.failed.push({ key: "batch", status: String((e as Error).message ?? e) }); writeJournal(kv, j);
@@ -257,7 +303,12 @@ export async function runMigration(o: {
       }
       batch.forEach((a, k) => {
         const s = res[k]?.status ?? "missing";
-        if (["created", "unchanged", "updated"].includes(s)) j!.done.push(aKey(a)); else j!.failed.push({ key: aKey(a), status: s });
+        if (["created", "unchanged", "updated"].includes(s)) j!.done.push(aKey(a));
+        else if (s === "id_taken" && a.type === "migrate_insert" && Object.keys(j!.remaps ?? {}).length < 1000) {
+          // The id belongs to another account: give this record an id of its own and update every later reference.
+          // Nothing saved earlier can point to it (dependents always come later), so finished groups stay valid.
+          remapId(j!, a.id, derivedId(p.uid, a.id));
+        } else j!.failed.push({ key: aKey(a), status: s });
       });
       writeJournal(kv, j);
       if (j.failed.length) { j.state = "failed"; writeJournal(kv, j); return { status: "failed", failed: j.failed }; }
@@ -268,16 +319,44 @@ export async function runMigration(o: {
     try { snap = await t.fetchAll(); } catch (e) { return { status: "interrupted", done: j.done.length, remaining: 0, error: String(e) }; }
     const missing = j.actions.filter((a) => {
       if (a.type === "settings") return !snap.settings || content({ ...snap.settings }) !== content(a.data);
-      if (a.type !== "upsert") return true;
+      if (a.type !== "upsert" && a.type !== "migrate_insert") return true;
       const r = snap[a.table].find((x) => x.id === a.id);
       if (!r || r.deleted_at) return true;
-      return Object.entries(a.data).some(([k, v]) => JSON.stringify(r[k] ?? null) !== JSON.stringify(v ?? null));
+      // Every sent field, split links and superseded markers included, must read back unchanged.
+      return Object.entries(a.data).some(([k, v]) => !sameVal(k, r[k], v));
     });
     if (missing.length) { j.state = "failed"; j.failed = missing.map((a) => ({ key: aKey(a), status: "not-verified" })); writeJournal(kv, j); return { status: "failed", failed: j.failed }; }
     j.state = "verified"; writeJournal(kv, j);
     o.guestKv.setItem(GUEST_MIGRATED_KEY, JSON.stringify({ uid: p.uid, at: (o.now ?? (() => new Date().toISOString()))() }));
-    return { status: "verified", added: j.actions.filter((a) => a.type === "upsert").length, alreadyPresent: p.expected.alreadyPresent };
+    return { status: "verified", added: j.actions.filter((a) => a.type === "upsert" || a.type === "migrate_insert").length, alreadyPresent: p.expected.alreadyPresent };
   } finally { running.delete(p.uid); }
+}
+
+const tierOf = (a: MigAction, all: MigAction[]): string => {
+  if (a.type === "settings") return "z";
+  if (a.type === "migrate_insert" && a.table === "events") {
+    let d = 0; let cur: MigAction | undefined = a;
+    while (cur && cur.type === "migrate_insert" && cur.data["split_from_event_id"] && d < 1000) { const pid: unknown = cur.data["split_from_event_id"]; cur = all.find((x) => x.type === "migrate_insert" && x.id === pid); d++; }
+    return `b${String(d).padStart(4, "0")}`;
+  }
+  return a.type === "migrate_insert" ? "c" : (a as { table: string }).table === "categories" ? "a" : "y";
+};
+/** The next group: consecutive actions of the same dependency tier, at most BATCH. */
+function groupOf(todo: MigAction[]): MigAction[] {
+  const tier = tierOf(todo[0]!, todo); const out: MigAction[] = [];
+  for (const a of todo) { if (out.length >= BATCH || tierOf(a, todo) !== tier) break; out.push(a); }
+  return out;
+}
+const REF_FIELDS = ["category_id", "split_from_event_id", "event_id", "superseded_by_event_id"];
+function remapId(j: Journal, from: string, to: string) {
+  j.remaps = { ...(j.remaps ?? {}), [from]: to };
+  j.actions = j.actions.map((a) => {
+    if (a.type === "settings" || a.type === "split") return a;
+    const b = { ...a } as MigAction & { id: string; data?: Record<string, unknown> };
+    if (b.id === from) b.id = to;
+    if (b.data) { b.data = { ...b.data }; for (const f of REF_FIELDS) if (b.data[f] === from) b.data[f] = to; }
+    return b as MigAction;
+  });
 }
 
 function readJournal(kv: KV, uid: string): Journal | null {

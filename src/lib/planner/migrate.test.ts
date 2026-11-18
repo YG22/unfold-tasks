@@ -97,16 +97,6 @@ describe("guest -> account planner migration", () => {
     expect(s.srv.user(A).categories.get(c1.id).deleted_at).toBeTruthy();
   });
 
-  it("split links and superseded exceptions require acknowledgement; dates and times are kept", async () => {
-    const before = ev({ weekdays: [1], until: "2026-03-31" }), after = ev({ weekdays: [2], date: "2026-04-01", splitFromEventId: before.id });
-    const sx = { id: uuid(), eventId: before.id, originalDate: "2026-04-06", type: "skip", supersededByEventId: after.id, supersededAt: "2026-03-20T00:00:00Z" };
-    const s = await setup({ events: [before, after], exceptions: [sx] });
-    expect((await s.preview()).unresolved).toEqual([{ kind: "split-links", count: 2 }]);
-    const p = await s.preview({ acceptSplitLinkLoss: true });
-    expect((await s.run(p)).status).toBe("verified");
-    expect(s.srv.user(A).events.get(before.id).until).toBe("2026-03-31");
-  });
-
   it("cloud change after preview invalidates it; nothing written", async () => {
     const s = await setup(full); const p = await s.preview();
     await s.srv.other(A, [{ type: "upsert", table: "categories", id: uuid(), base_version: 0, data: { name: "חדש", color: "teal" } }]);
@@ -185,5 +175,131 @@ describe("guest -> account planner migration", () => {
     expect((await s.run(p, { confirmation: null })).status).toBe("not-confirmed");
     expect((await s.run(p, { confirmation: { confirmed: true, token: "x" } })).status).toBe("not-confirmed");
     expect(s.srv.calls).toBe(0);
+  });
+
+  // ---------- split-series history ----------
+  const splitData = () => {
+    const a = ev({ title: "א", weekdays: [1], date: "2026-01-05", until: "2026-03-31" });
+    const b = ev({ title: "ב", weekdays: [2], date: "2026-04-01", until: "2026-06-30", splitFromEventId: a.id });
+    const c = ev({ title: "ג", weekdays: [3], date: "2026-07-01", splitFromEventId: b.id });
+    const xa = { id: uuid(), eventId: a.id, originalDate: "2026-01-12", type: "skip" };
+    const xs = { id: uuid(), eventId: a.id, originalDate: "2026-04-06", type: "change", newStartMin: 600, supersededByEventId: b.id, supersededAt: "2026-03-20T10:15:00.000Z" };
+    const xb = { id: uuid(), eventId: b.id, originalDate: "2026-04-07", type: "skip" };
+    const xs2 = { id: uuid(), eventId: b.id, originalDate: "2026-07-08", type: "skip", supersededByEventId: c.id, supersededAt: "2026-06-01T08:00:00.000Z" };
+    return { a, b, c, xa, xs, xb, xs2, guest: { events: [c, b, a], exceptions: [xs2, xb, xs, xa] } };
+  };
+  const row = (s, t, id) => s.srv.user(A)[t].get(id);
+
+  it("split-of-split history is kept: links, end dates, superseded markers and their original times", async () => {
+    const d = splitData(); const s = await setup(d.guest); const p = await s.preview();
+    expect(p.unresolved).toEqual([]);
+    expect(p.actions.filter((x) => x.table === "events").map((x) => x.id)).toEqual([d.a.id, d.b.id, d.c.id]); // parents first
+    expect((await s.run(p)).status).toBe("verified");
+    expect(row(s, "events", d.b.id).split_from_event_id).toBe(d.a.id); expect(row(s, "events", d.c.id).split_from_event_id).toBe(d.b.id);
+    expect(row(s, "events", d.a.id).until).toBe("2026-03-31"); expect(row(s, "events", d.b.id).until).toBe("2026-06-30");
+    expect(row(s, "exceptions", d.xs.id)).toMatchObject({ superseded_by_event_id: d.b.id, new_start_min: 600 });
+    expect(Date.parse(row(s, "exceptions", d.xs.id).superseded_at)).toBe(Date.parse(d.xs.supersededAt));
+    expect(row(s, "exceptions", d.xs2.id).superseded_by_event_id).toBe(d.c.id);
+    expect(row(s, "exceptions", d.xa.id).superseded_by_event_id).toBe(null);
+  });
+
+  it("original series remapped after a collision: successor and exceptions on it follow", async () => {
+    const d = splitData(); const s = await setup(d.guest);
+    await s.srv.other(A, [{ type: "upsert", table: "events", id: d.a.id, base_version: 0, data: { title: "אחר", date: "2026-01-01", start_min: 0, duration_min: 30 } }]);
+    const p = await s.preview(); const to = derivedId(A, d.a.id);
+    expect((await s.run(p)).status).toBe("verified");
+    expect(row(s, "events", d.a.id).title).toBe("אחר");
+    expect(row(s, "events", d.b.id).split_from_event_id).toBe(to);
+    expect(row(s, "exceptions", d.xa.id).event_id).toBe(to); expect(row(s, "exceptions", d.xs.id).event_id).toBe(to);
+  });
+
+  it("replacement series remapped: superseded markers and its own exceptions follow", async () => {
+    const d = splitData(); const s = await setup(d.guest);
+    await s.srv.other(A, [{ type: "upsert", table: "events", id: d.b.id, base_version: 0, data: { title: "אחר", date: "2026-01-01", start_min: 0, duration_min: 30 } }]);
+    const p = await s.preview(); const to = derivedId(A, d.b.id);
+    expect((await s.run(p)).status).toBe("verified");
+    expect(row(s, "exceptions", d.xs.id).superseded_by_event_id).toBe(to); expect(row(s, "exceptions", d.xb.id).event_id).toBe(to);
+    expect(row(s, "exceptions", d.xs2.id).event_id).toBe(to); expect(row(s, "events", d.c.id).split_from_event_id).toBe(to);
+  });
+
+  it("circular, broken and missing split history is blocked before anything is written", async () => {
+    const a = ev({ until: "2026-03-31" }), b = ev({ date: "2026-04-01", until: "2026-05-01" });
+    a.splitFromEventId = b.id; b.splitFromEventId = a.id; a.date = "2026-01-01";
+    const early = ev({ date: "2026-03-15", splitFromEventId: ev().id });
+    const p0 = ev({ date: "2026-01-01", until: "2026-03-31" });
+    const tooEarly = ev({ date: "2026-03-20", splitFromEventId: p0.id });
+    const badSup = { id: uuid(), eventId: p0.id, originalDate: "2026-04-06", type: "skip", supersededByEventId: p0.id, supersededAt: "2026-03-20T00:00:00Z" };
+    const s = await setup({ events: [a, b, early, p0, tooEarly], exceptions: [badSup] }); const pv = await s.preview();
+    const why = Object.fromEntries(pv.invalid.map((i) => [i.id, i.reason]));
+    expect(why[a.id]).toBe("circular-split"); expect(why[early.id]).toBe("missing-reference");
+    expect(why[tooEarly.id]).toBe("invalid-split"); expect(why[badSup.id]).toBe("invalid-split");
+    expect(pv.canMigrate).toBe(false); expect((await s.run(pv)).status).toBe("not-confirmed"); expect(s.srv.calls).toBe(0);
+  });
+
+  it("dropping an invalid parent also blocks everything that depends on it", async () => {
+    const d = splitData(); d.a.title = ""; const s = await setup(d.guest); const p = await s.preview();
+    const ids = p.invalid.map((i) => i.id);
+    for (const x of [d.b, d.c, d.xa, d.xs, d.xb, d.xs2]) expect(ids).toContain(x.id);
+  });
+
+  it("references to another account's records are rejected", async () => {
+    const s = await setup({ exceptions: [] });
+    const foreign = uuid();
+    await s.srv.other(B, [{ type: "upsert", table: "events", id: foreign, base_version: 0, data: { title: "B", date: "2026-01-01", until: "2026-03-31", start_min: 0, duration_min: 30 } }]);
+    const child = ev({ date: "2026-04-01", splitFromEventId: foreign }), x = { id: uuid(), eventId: foreign, originalDate: "2026-01-05", type: "skip" };
+    s.gkv.setItem(GUEST_KEY, JSON.stringify({ v: 1, categories: [], events: [child], exceptions: [x], availability: [] }));
+    const p = await s.preview(); expect(p.invalid.map((i) => i.reason)).toEqual(["missing-reference", "missing-reference"]);
+    // Even a hand-made request is refused by the server.
+    const r = await s.t.apply([{ type: "migrate_insert", table: "events", id: child.id, base_version: 0, data: { title: "x", date: "2026-04-01", start_min: 0, duration_min: 30, split_from_event_id: foreign } }]);
+    expect(r[0].status).toBe("invalid_reference");
+  });
+
+  it("without split support on the backend, split history is blocked (no acknowledgement option)", async () => {
+    const d = splitData(); const s = await setup(d.guest);
+    const p = previewMigration({ uid: A, guestKv: s.gkv, cloudKv: s.kv, cloud: await s.t.fetchAll(), resolutions: { acceptSplitLinkLoss: true, skipInvalid: true }, splitHistorySupported: false });
+    expect(p.unresolved).toEqual([{ kind: "split-history-unsupported", count: 4 }]); expect(confirmMigration(p)).toBe(null);
+  });
+
+  it("interrupted between groups resumes; parents saved earlier stay intact", async () => {
+    const d = splitData(); const s = await setup(d.guest); const p = await s.preview();
+    let n = 0; const t = { ...s.t, apply: async (a) => { if (++n === 3) throw new PlannerNetworkError("offline"); return s.t.apply(a); } };
+    expect((await s.run(p, { transport: t })).status).toBe("interrupted");
+    expect(row(s, "events", d.a.id)).toBeTruthy(); expect(row(s, "events", d.b.id)).toBeTruthy(); expect(row(s, "events", d.c.id)).toBe(undefined);
+    expect((await s.run(p)).status).toBe("verified");
+    const again = await s.preview(); expect(again.canMigrate).toBe(false); expect(again.expected.alreadyPresent).toBe(7);
+    expect((await s.run(p)).status).toBe("nothing-to-do"); expect(s.srv.user(A).events.size).toBe(3);
+  });
+
+  it("id taken by another account mid-run: earlier groups kept, the record and its dependents get the new id", async () => {
+    const d = splitData(); const s = await setup(d.guest); const p = await s.preview();
+    // Another account claims b's id and an exception id after the preview (invisible to this account).
+    await s.srv.other(B, [{ type: "upsert", table: "events", id: d.b.id, base_version: 0, data: { title: "B", date: "2026-01-01", start_min: 0, duration_min: 30 } }]);
+    await s.srv.other(B, [{ type: "upsert", table: "events", id: uuid(), base_version: 0, data: { title: "B2", date: "2026-01-01", start_min: 0, duration_min: 30 } }]);
+    const bx = s.srv.user(B).events.get(d.b.id);
+    const r = await s.run(p); expect(r.status).toBe("verified");
+    const to = derivedId(A, d.b.id);
+    expect(row(s, "events", to).split_from_event_id).toBe(d.a.id); expect(row(s, "events", d.c.id).split_from_event_id).toBe(to);
+    expect(row(s, "exceptions", d.xs.id).superseded_by_event_id).toBe(to); expect(row(s, "exceptions", d.xb.id).event_id).toBe(to);
+    expect(s.srv.user(B).events.get(d.b.id)).toEqual(bx);
+    expect(JSON.parse(s.kv.getItem(migrationKey(A))).remaps).toEqual({ [d.b.id]: to });
+  });
+
+  it("an exception id taken by another account is remapped too", async () => {
+    const d = splitData(); const s = await setup(d.guest); const p = await s.preview();
+    await s.srv.other(B, [{ type: "upsert", table: "events", id: uuid(), base_version: 0, data: { title: "B", date: "2026-01-01", start_min: 0, duration_min: 30 } }]);
+    const bev = [...s.srv.user(B).events.keys()][0];
+    await s.srv.other(B, [{ type: "upsert", table: "exceptions", id: d.xs.id, base_version: 0, data: { event_id: bev, original_date: "2026-01-01", type: "skip" } }]);
+    expect((await s.run(p)).status).toBe("verified");
+    expect(row(s, "exceptions", derivedId(A, d.xs.id)).superseded_by_event_id).toBe(d.b.id);
+  });
+
+  it("a different existing record is never overwritten by migrate_insert", async () => {
+    const d = splitData(); const s = await setup(d.guest); const p = await s.preview();
+    await s.srv.other(A, [{ type: "upsert", table: "events", id: d.a.id, base_version: 0, data: { title: "שלי", date: "2026-01-01", start_min: 0, duration_min: 30 } }]);
+    expect((await s.run(p)).status).toBe("preview-stale");
+    // Even sent directly, the create-only save refuses to replace it.
+    const r = await s.t.apply([p.actions.find((x) => x.id === d.a.id)]);
+    expect(r[0].status).toBe("conflict");
+    expect(row(s, "events", d.a.id).title).toBe("שלי");
   });
 });

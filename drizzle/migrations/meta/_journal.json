@@ -64,6 +64,20 @@
       "when": 1795027377302,
       "tag": "0008_planner_restore_omitted_sections",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795028820860,
+      "tag": "0009_planner_migrate_insert",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795028866244,
+      "tag": "0010_planner_migrate_insert_fix",
+      "breakpoints": true
     }
   ]
 }

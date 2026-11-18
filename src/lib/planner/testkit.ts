@@ -40,6 +40,26 @@ function fakeServer() {
         u.exceptions.set(id, { ...x, superseded_by_event_id: a.new_id, superseded_at: "2026-11-18T00:00:00Z", version: x.version + 1 });
       return st(a.new_id, "split", n);
     }
+    if (a.type === "migrate_insert") {
+      // Same answers as _planner_migrate_insert: create-only, full content incl. split history, own references only.
+      if (a.base_version !== 0 || !["events", "exceptions"].includes(a.table)) throw new PlannerServerError("planner: migrate_insert invalid");
+      const cols = [...CONTENT[a.table], ...(a.table === "events" ? ["split_from_event_id"] : ["superseded_by_event_id", "superseded_at"])];
+      const full = (o) => { const x = Object.fromEntries(cols.map((k) => [k, o[k] ?? null])); if (x.superseded_at) x.superseded_at = new Date(x.superseded_at).toISOString(); return x; };
+      const nc = full({ ...(DEF[a.table] ?? {}), ...a.data });
+      const liveEv = (id) => { const e = u.events.get(id); return e && !e.deleted_at ? e : null; };
+      if (a.table === "events") {
+        if (nc.category_id && !(u.categories.get(nc.category_id) && !u.categories.get(nc.category_id).deleted_at)) return st(a.id, "invalid_reference", null);
+        if (nc.split_from_event_id) { const p = liveEv(nc.split_from_event_id); if (!p || !p.until || nc.date <= p.until || p.id === a.id) return st(a.id, "invalid_reference", null); }
+      } else {
+        if (!liveEv(nc.event_id)) return st(a.id, "invalid_reference", null);
+        if (nc.superseded_by_event_id) { const n = liveEv(nc.superseded_by_event_id); if (!n || n.split_from_event_id !== nc.event_id || nc.original_date < n.date) return st(a.id, "invalid_reference", null); }
+      }
+      const cur = u[a.table].get(a.id);
+      if (cur) return !cur.deleted_at && JSON.stringify(full(cur)) === JSON.stringify(nc) ? st(a.id, "unchanged", cur) : st(a.id, "conflict", cur);
+      if (owner.has(a.id)) return st(a.id, "id_taken", null);
+      const row = { id: a.id, ...nc, ...(a.table === "exceptions" && nc.superseded_at ? { superseded_at: nc.superseded_at.replace(".000Z", "+00:00") } : {}), version: 1, deleted_at: null };
+      u[a.table].set(a.id, row); owner.set(a.id, uid); return st(a.id, "created", row);
+    }
     const m = u[a.table], cur = m.get(a.id);
     if (owner.has(a.id) && owner.get(a.id) !== uid) throw new PlannerServerError("planner: id already in use");
     if (a.type === "upsert") {

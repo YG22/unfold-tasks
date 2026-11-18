@@ -541,6 +541,7 @@ export type Database = {
         }
         Returns: number
       }
+      _planner_migrate_insert: { Args: { a: Json; uid: string }; Returns: Json }
       _planner_record: { Args: { a: Json; uid: string }; Returns: Json }
       _planner_restore: {
         Args: { apply_: boolean; p: Json; uid: string }
