@@ -2,7 +2,7 @@
 // Omitted sections mean "leave unchanged"; an included empty array means "restore that section as empty".
 // Never contains pending sync queues, operation logs or tokens.
 import { emptyData, fromRow, settingsFromRow, settingsToRow, TABLES, toRow, validRecord, validSettings, type PlannerData, type PlannerSettings, type RecordOf, type TableName } from "./data";
-import { GUEST_KEY, loadGuest, type KV } from "./guest";
+import { GUEST_KEY, guestDoc, loadGuest, type KV } from "./guest";
 import { PlannerNetworkError, type ServerSnapshot } from "./sync";
 
 export type Section = TableName | "settings";
@@ -143,8 +143,18 @@ export function applyGuestRestore(kv: KV, p: GuestRestorePreview, confirmed: boo
   const now = kv.getItem(GUEST_KEY);
   if (applied.has(p) && applied.get(p) === now) return { ok: true, repeated: true };
   if (now !== p.basis) return { ok: false, reason: "changed" };
-  const next = merged(loadGuest(kv).data, p.data);
-  const text = JSON.stringify({ v: 1, ...next });
+  const cur = loadGuest(kv);
+  const next = merged(cur.data, p.data);
+  // Deletion markers survive the restore: records the restore removes are marked deleted (as the cloud restore does),
+  // and a restored record that was deleted becomes active again.
+  const at = new Date().toISOString(); const deleted = structuredClone(cur.deleted);
+  for (const t of TABLES) {
+    if (!p.data[t]) continue;
+    const keep = new Set((next[t] as { id: string }[]).map((r) => r.id));
+    deleted[t] = deleted[t].filter((r) => !keep.has(r.id));
+    for (const r of cur.data[t] as RecordOf<TableName>[]) if (!keep.has(r.id)) deleted[t].push({ ...r, deletedAt: at });
+  }
+  const text = guestDoc(next, deleted);
   try { kv.setItem(GUEST_KEY, text); } catch (e) {
     // setItem is all-or-nothing; make sure the previous content is still there.
     if (kv.getItem(GUEST_KEY) !== now && now != null) try { kv.setItem(GUEST_KEY, now); } catch { /* keep going */ }
