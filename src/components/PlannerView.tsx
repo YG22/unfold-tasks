@@ -137,7 +137,7 @@ function Block({ b, compact }: { b: CalendarBlock; compact: boolean }) {
       className={`absolute overflow-hidden rounded-md border-s-4 px-1 py-0.5 text-foreground ${reserved ? "border-dashed opacity-70" : ""} ${compact ? "text-[10px]" : "text-xs"}`}
       style={{
         top: (b.top / 60) * HOUR_PX, height: h, insetInlineStart: `calc(${b.lane * w}% + 1px)`, width: `calc(${w}% - 2px)`,
-        background: `color-mix(in oklch, var(--cat-${b.color}) 22%, var(--card))`, borderInlineStartColor: `var(--cat-${b.color})`,
+        background: `color-mix(in srgb, var(--cat-${b.color}) 22%, var(--card))`, borderInlineStartColor: `var(--cat-${b.color})`,
       }}
     >
       <div className="truncate font-semibold">{b.continuesFromPrev && <Moon aria-label="ממשיך מהיום הקודם" className="me-0.5 inline h-3 w-3" />}{b.title}</div>
