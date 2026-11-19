@@ -20,3 +20,11 @@ Clean-up plan required before running (planner rows are soft-deleted, not remove
 - Live updates were not re-tested after the Scenario 10 fix.
 - Real notification delivery has not been tested.
 - Signed-in restore was tested only against the isolated Draft backend.
+
+## Event management (Stage 9C.2) – known limitations
+- A single occurrence of a recurring event can change only its date, start time and duration; title/category overrides are not supported.
+- "Edit the whole series" on a series that was split earlier changes only the chosen part; its start date (linked to the earlier part) and end date (linked to a later part) are locked.
+- Guest deletion is stricter than cloud deletion (a category in use or one split part on its own cannot be deleted).
+- Guest undelete is not available except through an explicit backup restore; deleted guest records stay stored on the device.
+- Signed-in whole-series delete sends one soft delete per part (newest first); if a part is refused mid-way the user is told and the remaining parts stay.
+- Signed-in event management was tested against the simulated server only, not the live backend.

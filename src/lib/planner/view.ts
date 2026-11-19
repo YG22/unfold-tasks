@@ -5,7 +5,7 @@ import { eventCategory, expand, type Occurrence } from "./model";
 import { addDays, dayStartUtc, MIN, splitByDay, toLocal, weekDates } from "./time";
 
 export type CalendarBlock = {
-  key: string; eventId: string; title: string; color: string; categoryName: string;
+  key: string; eventId: string; originalDate: string; recurring: boolean; title: string; color: string; categoryName: string;
   date: string; // local day this piece is drawn on
   top: number; bottom: number; // minutes from that day's local midnight (bottom may be 1440)
   startLabel: string; endLabel: string; // real local wall-clock start/end of the whole occurrence
@@ -38,7 +38,7 @@ export function layoutDays(data: PlannerData, dates: string[], tz: string): Reco
       // Scale DST days (23h/25h) onto the 24h grid so the bottom of the day stays at midnight.
       const scale = 1440 / len;
       list.push({
-        key: `${o.key}@${piece.date}`, eventId: e.id, title: e.title, color: cat.color, categoryName: cat.name, date: piece.date,
+        key: `${o.key}@${piece.date}`, eventId: e.id, originalDate: o.originalDate, recurring: !!e.weekdays?.length, title: e.title, color: cat.color, categoryName: cat.name, date: piece.date,
         top: Math.round(top * scale), bottom: Math.round(rawBottom * scale), startLabel, endLabel,
         continuesFromPrev: piece.start > span.start, continuesToNext: piece.end < span.end,
         status: o.interval ? o.status : "reserved", lane: 0, lanes: 1,

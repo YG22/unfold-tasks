@@ -1,5 +1,6 @@
-# Stage 9C.1 final refinements
+# Stage 9C.2 planner event management
 
-- [x] Expand desktop planner only; retain mobile scrolling and existing screen widths.
-- [x] Verify category colours, weekly/daily navigation, recurrence, overlaps and overnight display in both themes and viewport sizes.
-- [x] Run all 175 tests and inspect automatic type-check/build results; document completion without starting Stage 9C.2.
+- [x] Create one-time, recurring and overnight events with validation
+- [x] Edit one-time events; edit one occurrence (date/time/duration) or the whole series
+- [x] Delete one-time events, cancel one occurrence, delete whole (split) series with confirmation
+- [x] Guest and signed-in persistence through existing stores; tests; UI check in both themes
