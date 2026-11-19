@@ -52,11 +52,11 @@ export function PlannerView({ userId, today }: { userId: string | null; today: s
   useEffect(() => { if (scroller.current) scroller.current.scrollTop = 7 * HOUR_PX; }, [mode, state.status]);
 
   const step = mode === "week" ? 7 : 1;
-  const title = mode === "week" ? `${shortDate(dates[0]!)} – ${shortDate(dates[6]!)}` : `יום ${hebrewWeekday(anchor)}, ${shortDate(anchor)}`;
+  const title = mode === "week" ? `${shortDate(dates[0] ?? anchor)} – ${shortDate(dates[6] ?? anchor)}` : `יום ${hebrewWeekday(anchor)}, ${shortDate(anchor)}`;
 
   return (
-    <section aria-label="התכנון שלי" className="mb-6 rounded-2xl bg-card p-3 shadow-[var(--shadow-soft)] sm:p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <section aria-label="התכנון שלי" className="mb-6 rounded-2xl bg-card p-3 shadow-[var(--shadow-soft)] sm:p-4 lg:mx-[calc((100%-100vw+2rem)/2)] lg:w-[calc(100vw-2rem)]">
+      <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 sm:flex sm:justify-between">
         <div role="group" aria-label="תצוגה" className="flex rounded-xl bg-secondary p-1">
           {(["week", "day"] as const).map((m) => (
             <button key={m} type="button" aria-pressed={mode === m} onClick={() => setMode(m)}
@@ -134,15 +134,15 @@ function Block({ b, compact }: { b: CalendarBlock; compact: boolean }) {
   return (
     <div
       title={`${b.title} · ${b.startLabel}–${b.endLabel} · ${b.categoryName}${reserved ? " · זמן שמור בגלל מעבר לשעון קיץ" : ""}`}
-      className={`absolute overflow-hidden rounded-md border-s-4 px-1 py-0.5 text-foreground ${reserved ? "border-dashed opacity-70" : ""} ${compact ? "text-[10px]" : "text-xs"}`}
+      className={`absolute overflow-hidden rounded-md border-s-4 px-1 py-0.5 text-foreground ${reserved ? "border-dashed opacity-70" : ""} ${compact ? "text-[10px] lg:text-xs" : "text-xs"}`}
       style={{
         top: (b.top / 60) * HOUR_PX, height: h, insetInlineStart: `calc(${b.lane * w}% + 1px)`, width: `calc(${w}% - 2px)`,
         background: `color-mix(in srgb, var(--cat-${b.color}) 22%, var(--card))`, borderInlineStartColor: `var(--cat-${b.color})`,
       }}
     >
       <div className="truncate font-semibold">{b.continuesFromPrev && <Moon aria-label="ממשיך מהיום הקודם" className="me-0.5 inline h-3 w-3" />}{b.title}</div>
-      {h > 26 && <div className="truncate tabular-nums text-muted-foreground" dir="ltr">{b.startLabel}–{b.endLabel}</div>}
-      {reserved && h > 38 && <div className="truncate text-muted-foreground">זמן שמור – שעה לא קיימת</div>}
+      {h > 26 && <div className="truncate tabular-nums" dir="ltr">{b.startLabel}–{b.endLabel}</div>}
+      {reserved && h > 38 && <div className="truncate">זמן שמור – שעה לא קיימת</div>}
     </div>
   );
 }
