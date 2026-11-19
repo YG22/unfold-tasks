@@ -2,10 +2,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { BackupPanel } from "@/components/BackupPanel";
 import { AccountPanel } from "@/components/AccountPanel";
+import { PlannerView } from "@/components/PlannerView";
 import { useTaskStore } from "@/hooks/useTaskStore";
 import { normalizeIds } from "@/lib/cloud";
 import {
   CalendarClock,
+  CalendarDays,
   Check,
   ChevronDown,
   Clock,
@@ -400,7 +402,7 @@ function Index() {
   const [picked, setPicked] = useState<string[]>([]);
   const [groupError, setGroupError] = useState("");
   const [scheduleOpen, setScheduleOpen] = useState<string | null>(null);
-  const [view, setView] = useState<"day" | "lists">("day");
+  const [view, setView] = useState<"day" | "lists" | "planner">("day");
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -599,11 +601,12 @@ function Index() {
           </p>
         </header>
 
-        <div className="mb-6 grid grid-cols-2 gap-2 rounded-2xl bg-card p-1.5 shadow-[var(--shadow-soft)]">
+        <div className="mb-6 grid grid-cols-3 gap-2 rounded-2xl bg-card p-1.5 shadow-[var(--shadow-soft)]">
           {(
             [
               { id: "day", label: "היום שלי", icon: Sun },
               { id: "lists", label: "כל הרשימות", icon: ListTodo },
+              { id: "planner", label: "התכנון שלי", icon: CalendarDays },
             ] as const
           ).map(({ id, label, icon: Icon }) => (
             <button
@@ -635,6 +638,8 @@ function Index() {
             }
           />
         )}
+
+        {view === "planner" && <PlannerView userId={store.user?.id ?? null} today={localTodayStr()} />}
 
         {view === "lists" && (
         <>

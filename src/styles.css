@@ -62,6 +62,14 @@
 }
 
 :root {
+  --cat-green: oklch(0.62 0.14 150);
+  --cat-blue: oklch(0.6 0.14 250);
+  --cat-amber: oklch(0.72 0.15 75);
+  --cat-rose: oklch(0.62 0.18 15);
+  --cat-violet: oklch(0.58 0.16 295);
+  --cat-teal: oklch(0.62 0.1 195);
+  --cat-orange: oklch(0.68 0.16 50);
+  --cat-slate: oklch(0.58 0.02 250);
   --radius: 0.625rem;
   --shadow-soft: 0 10px 24px -12px oklch(0.4 0.05 150 / 0.35);
   --background: oklch(0.98 0.012 120);
@@ -100,6 +108,14 @@
 }
 
 .dark {
+  --cat-green: oklch(0.72 0.14 150);
+  --cat-blue: oklch(0.7 0.14 250);
+  --cat-amber: oklch(0.72 0.15 75);
+  --cat-rose: oklch(0.72 0.18 15);
+  --cat-violet: oklch(0.68 0.16 295);
+  --cat-teal: oklch(0.72 0.1 195);
+  --cat-orange: oklch(0.75 0.16 50);
+  --cat-slate: oklch(0.68 0.02 250);
   --background: oklch(0.129 0.042 264.695);
   --foreground: oklch(0.984 0.003 247.858);
   --card: oklch(0.208 0.042 265.755);

@@ -13,3 +13,10 @@ Clean-up plan required before running (planner rows are soft-deleted, not remove
 8. **Recurring-series splits** – split from a date: old series ends the day before, new series links back, later exceptions become superseded (kept), earlier exceptions unchanged; repeating the split returns "unchanged".
 9. **Restore interaction** – a restore preview/apply while a device has pending edits: those edits then get "stale" conflicts instead of overwriting restored data; omitted sections stay untouched.
 10. **Unreadable device cache** – corrupt the pending-edit cache: sync pauses with a recovery state, nothing is sent, the raw copy is preserved.
+
+## Known limitations (as of Stage 9C.1)
+
+- Task and planner restores are not one atomic operation (planner restores first; tasks only if it succeeded).
+- Live updates were not re-tested after the Scenario 10 fix.
+- Real notification delivery has not been tested.
+- Signed-in restore was tested only against the isolated Draft backend.
